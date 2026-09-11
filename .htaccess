@@ -1,0 +1,42 @@
+# ===========================================================================
+# Gallery – hardening a livello Apache (valido con AllowOverride All)
+# NB: l'autenticazione Basic vera è in /etc/apache2/conf-enabled/gallery.conf
+# ===========================================================================
+
+Options -Indexes -MultiViews
+
+# --- URL pulite per le immagini (mirror di gallery.conf) --------------------
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /gallery/
+  RewriteRule ^i/([A-Za-z0-9_-]+)$ i.php?c=$1 [L,QSA]
+  RewriteRule ^t/([A-Za-z0-9_-]+)$ i.php?c=$1&thumb=1 [L,QSA]
+</IfModule>
+
+# --- File che non devono MAI essere serviti --------------------------------
+<FilesMatch "\.(db|db-wal|db-shm|sqlite|sql|md|log|bak|sh)$">
+  Require all denied
+</FilesMatch>
+<FilesMatch "^(secret|_theme|config)\.php$">
+  # config.php e _theme.php sono include: nessun output utile se aperti,
+  # secret.php contiene i segreti. Meglio negarli comunque.
+  Require all denied
+</FilesMatch>
+<FilesMatch "^\.">
+  Require all denied
+</FilesMatch>
+
+# --- Directory di backup --------------------------------------------------
+RedirectMatch 404 ^/gallery/_orig_backup_.*
+
+# --- Header di sicurezza -------------------------------------------------
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+
+  # Solo le pagine applicative index.php (galleria + admin/), non i.php
+  <FilesMatch "^index\.php$">
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
+  </FilesMatch>
+</IfModule>

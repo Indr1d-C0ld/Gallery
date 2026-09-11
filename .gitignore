@@ -1,0 +1,19 @@
+# Configurazione e segreti reali
+config.php
+secret.php
+
+# Database e sidecar SQLite
+*.db
+*.db-wal
+*.db-shm
+
+# Contenuti caricati dagli utenti (solo .htaccess resta versionato)
+uploads/*
+thumbs/*
+!uploads/.htaccess
+!thumbs/.htaccess
+
+# Sistema / editor
+.DS_Store
+*.swp
+*~

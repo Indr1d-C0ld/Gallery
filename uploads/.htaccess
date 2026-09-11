@@ -1,0 +1,12 @@
+# uploads/ – solo file statici serviti da i.php; nessuna esecuzione di codice
+Options -Indexes -ExecCGI
+<IfModule mod_mime.c>
+  RemoveHandler .php .phtml .phar .php3 .php4 .php5 .php7 .php8
+  RemoveType .php .phtml .phar
+</IfModule>
+<IfModule php_module>
+  php_flag engine off
+</IfModule>
+<FilesMatch "\.(php|phtml|phar|phps|cgi|pl|py|sh|htaccess)$">
+  Require all denied
+</FilesMatch>

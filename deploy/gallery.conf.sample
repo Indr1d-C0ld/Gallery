@@ -1,0 +1,32 @@
+# /etc/apache2/conf-enabled/gallery.conf
+# Versione 2026-09-11: l'endpoint immagini (i.php, /i/, /t/) è pubblico per
+# consentire l'hotlink da forum/siti esterni; tutto il resto resta dietro Basic Auth.
+
+<Directory /var/www/html/gallery>
+    Options -Indexes -MultiViews
+    AllowOverride All
+
+    RewriteEngine On
+    RewriteBase /gallery/
+    RewriteRule ^i/([A-Za-z0-9_-]+)$ i.php?c=$1 [L,QSA]
+    RewriteRule ^t/([A-Za-z0-9_-]+)$ i.php?c=$1&thumb=1 [L,QSA]
+
+    AuthType Basic
+    AuthName "Gallery - Accesso riservato"
+    AuthUserFile /etc/apache2/.htpasswd-gallery
+
+    <RequireAny>
+        # pubblico: solo la consegna delle immagini
+        Require expr %{REQUEST_URI} =~ m#^/gallery/(i\.php$|i/[A-Za-z0-9_-]+$|t/[A-Za-z0-9_-]+$)#
+        # tutto il resto: credenziali
+        Require valid-user
+    </RequireAny>
+</Directory>
+
+# Doppio lucchetto: file che non devono mai uscire, anche se raggiunti direttamente
+<Files ~ "\.(db|db-wal|db-shm|sqlite|sql|md|log|bak|sh)$">
+    Require all denied
+</Files>
+<Files "secret.php">
+    Require all denied
+</Files>
