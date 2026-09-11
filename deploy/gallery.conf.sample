@@ -1,5 +1,5 @@
-# /etc/apache2/conf-enabled/gallery.conf
-# Versione 2026-09-11: l'endpoint immagini (i.php, /i/, /t/) è pubblico per
+# /etc/apache2/conf-available/gallery.conf
+# Revisione 2026-09: l'endpoint immagini (i.php, /i/, /t/) è pubblico per
 # consentire l'hotlink da forum/siti esterni; tutto il resto resta dietro Basic Auth.
 
 <Directory /var/www/html/gallery>
