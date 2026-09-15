@@ -56,7 +56,22 @@ $ALLOWED = [
   'image/gif'  => 'gif',
   'image/webp' => 'webp',
 ];
-$MAX_BYTES = 20 * 1024 * 1024;   // 20 MB
+$MAX_BYTES  = 20 * 1024 * 1024;  // 20 MB sul file compresso
+$MAX_PIXELS = 40 * 1000 * 1000;  // 40 megapixel: tetto sull'immagine DECOMPRESSA
+
+/* Tetto di memoria per le sole richieste di Gallery (php.ini qui e' illimitato).
+ *
+ * ATTENZIONE, misurato il 2026-09-14: questo NON protegge da immagini-bomba.
+ * libgd alloca fuori dalla contabilita' di PHP, quindi memory_limit non la
+ * vincola: un PNG di 107 KB che dichiara 30000x30000 ha portato il processo
+ * a 1754 MB di RSS pur avendo memory_limit=256M. L'unica difesa reale e' il
+ * controllo sui pixel PRIMA della decodifica ($MAX_PIXELS, upload.php:3b).
+ * Questo tetto resta utile per le allocazioni lato PHP (lettura file, stringhe,
+ * risultati di query) e come rete in caso di codice che sfugga di mano.
+ */
+if ((int)ini_get('memory_limit') === -1 || (int)ini_get('memory_limit') > 512) {
+  @ini_set('memory_limit', '512M');
+}
 
 /* --- API token --------------------------------------------------------- */
 $API_TOKEN = $__secret['API_TOKEN']
@@ -131,4 +146,29 @@ function db(): PDO {
 
 function shortcode(int $len = 7): string {
   return rtrim(strtr(base64_encode(random_bytes($len)), '+/', '-_'), '=');
+}
+
+/* --- Cancellazione sicura -------------------------------------------------
+ * "Copia" duplica la riga ma NON il file: piu' short-code possono puntare
+ * allo stesso filename. Rimuove i file da disco solo quando l'ultima riga
+ * che li referenzia e' stata cancellata, altrimenti eliminando una copia si
+ * distruggerebbe anche l'originale.
+ */
+function delete_image(string $short): bool {
+  global $UPLOADS, $THUMBS;
+
+  $st = db()->prepare("SELECT filename FROM images WHERE short=?");
+  $st->execute([$short]);
+  $r = $st->fetch();
+  if (!$r) return false;
+
+  db()->prepare("DELETE FROM images WHERE short=?")->execute([$short]);
+
+  $c = db()->prepare("SELECT COUNT(*) FROM images WHERE filename=?");
+  $c->execute([$r['filename']]);
+  if ((int)$c->fetchColumn() === 0) {
+    @unlink(rtrim($UPLOADS, '/') . '/' . $r['filename']);
+    @unlink(rtrim($THUMBS,  '/') . '/' . $r['filename']);
+  }
+  return true;
 }

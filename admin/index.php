@@ -49,13 +49,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ->execute([$_POST['title'] ?? null, $_POST['alt'] ?? null, $folder, $short]);
 
   } elseif ($act === 'delete') {
-    $q = db()->prepare("SELECT filename FROM images WHERE short=?");
-    $q->execute([$short]);
-    if ($r = $q->fetch()) {
-      @unlink($UPLOADS . '/' . $r['filename']);
-      @unlink($THUMBS  . '/' . $r['filename']);
-      db()->prepare("DELETE FROM images WHERE short=?")->execute([$short]);
-    }
+    delete_image($short);   // rimuove i file solo se nessun'altra copia li usa
 
   } elseif ($act === 'retthumb') {
     $q = db()->prepare("SELECT filename,mime FROM images WHERE short=?");

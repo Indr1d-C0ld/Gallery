@@ -59,6 +59,25 @@ if (!isset($ALLOWED[$mime])) {
 }
 $ext = $ALLOWED[$mime];
 
+/* 3b) Dimensioni in pixel — PRIMA di qualunque decodifica.
+ * getimagesize() legge solo l'intestazione: una "decompression bomb" (file
+ * piccolo che dichiara decine di migliaia di pixel per lato) verrebbe
+ * altrimenti espansa in RAM da GD fino a saturare la memoria della macchina.
+ * Il controllo avviene sul file temporaneo: una bomba non tocca mai uploads/.
+ */
+$gi = @getimagesize($f['tmp_name']);
+if (!is_array($gi) || ($gi[0] ?? 0) < 1 || ($gi[1] ?? 0) < 1) {
+  http_response_code(415);
+  exit("immagine non leggibile o corrotta");
+}
+if ($gi[0] * $gi[1] > $MAX_PIXELS) {
+  http_response_code(413);
+  exit(sprintf(
+    "immagine troppo grande: %d×%d = %.1f megapixel (max %.0f)",
+    $gi[0], $gi[1], ($gi[0] * $gi[1]) / 1e6, $MAX_PIXELS / 1e6
+  ));
+}
+
 /* 4) Folder (cartella logica in DB) */
 $folder = norm_folder($_POST['folder'] ?? '');
 
@@ -78,10 +97,9 @@ if (!move_uploaded_file($f['tmp_name'], $dest)) {
   exit("store failed");
 }
 
-/* 7) Dati immagine */
-$w = null; $h = null;
-$gi = @getimagesize($dest);
-if (is_array($gi)) { $w = $gi[0] ?? null; $h = $gi[1] ?? null; }
+/* 7) Dati immagine (gia' misurate al punto 3b) */
+$w = $gi[0];
+$h = $gi[1];
 
 /* 8) Thumbnail */
 if ($USE_THUMBS) {

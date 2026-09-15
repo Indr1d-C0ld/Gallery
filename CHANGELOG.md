@@ -1,5 +1,56 @@
 # Changelog
 
+## 2026-09-15 — Audit: due difetti critici corretti
+
+Revisione avversariale integrale del codice: 13 rilievi complessivi, i due
+critici corretti e verificati.
+
+### Perdita di dati su copia + elimina
+
+L'azione «Copia» duplica la riga nel database ma **non** il file su disco: più
+short-code finiscono per puntare allo stesso `filename`. L'eliminazione faceva
+`unlink()` senza verificare se altre righe referenziassero ancora quel file,
+quindi cancellare una copia distruggeva anche l'originale — riga ancora in
+elenco, immagine 404, file perduto in modo irreversibile.
+
+Nuova funzione `delete_image()` in `config.php`: cancella la riga, poi rimuove
+i file solo quando nessun'altra riga li referenzia. Chiamata sia da
+`admin/index.php` sia da `delete.php`, che prima contenevano due copie
+divergenti della stessa logica.
+
+### Immagine-bomba: esaurimento memoria dell'intera macchina
+
+L'upload limitava la dimensione del file (20 MB) ma non le dimensioni in pixel,
+e `imagecreatefromstring()` decodificava prima di qualunque verifica. Un PNG di
+poche centinaia di KB che dichiara decine di migliaia di pixel per lato viene
+espanso da GD fino a saturare la RAM: su un server condiviso l'OOM killer non
+si porta via solo questa applicazione.
+
+Nuovo controllo `$MAX_PIXELS` (40 megapixel di default) in `upload.php`: la
+verifica usa `getimagesize()`, che legge solo l'intestazione, e avviene sul file
+temporaneo — un file ostile non raggiunge mai `uploads/`.
+
+> **Nota per chi implementa difese analoghe.** Alzare o abbassare
+> `memory_limit` non risolve: libgd alloca fuori dalla contabilità di memoria di
+> PHP, quindi il limite non la vincola. Misurato: un PNG di 107 KB che dichiara
+> 30000×30000 ha portato il processo a **1754 MB di RSS** con `memory_limit`
+> impostato a 256M. Il controllo sui pixel prima della decodifica non è la
+> difesa preferibile, è l'unica. Il `memory_limit` impostato in `config.php`
+> resta utile per le allocazioni lato PHP e il commento ne dichiara i limiti.
+
+Verificato: eliminare una copia lascia intatto l'originale; eliminare l'ultima
+riga rimuove file e miniatura senza orfani; chiave di cancellazione errata 403;
+bomba palette 900 MP e bomba truecolor 625 MP entrambe respinte con 413;
+immagine legittima 800×600 accettata con dimensioni corrette.
+
+### Rilievi minori ancora aperti
+
+Errore 500 su parametri passati come array (`?q[]=`); permessi del docroot;
+`Strict-Transport-Security` assente nella configurazione di esempio; regola
+sui file nascosti che non copre le cartelle nascoste; file orfano se
+l'inserimento nel database fallisce dopo il salvataggio; `theme_foot()` che
+stampa il parametro senza escape; numero di pagina senza tetto massimo.
+
 ## 2026-09-11 (3) — Mobile & tablet
 
 Un unico blocco `@media (max-width:768px), (pointer:coarse)` in `_theme.php`,

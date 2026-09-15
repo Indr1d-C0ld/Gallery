@@ -8,8 +8,6 @@ $q->execute([$short]);
 $r = $q->fetch(PDO::FETCH_ASSOC);
 if (!$r || !hash_equals($r['delkey'],$key)) { http_response_code(403); exit("forbidden"); }
 
-@unlink($UPLOADS."/".$r['filename']);
-@unlink($THUMBS."/".$r['filename']);
-db()->prepare("DELETE FROM images WHERE short=?")->execute([$short]);
+delete_image($short);   // rimuove i file solo se nessun'altra copia li usa
 echo "deleted\n";
 
