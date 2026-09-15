@@ -48,12 +48,12 @@ function human_size(?int $b): string {
  * f="Nome"         -> scope "folder" con quell'album
  */
 $scope  = isset($_GET['f']) ? 'folder' : 'all';
-$folder = substr(preg_replace('~[^a-zA-Z0-9 _-]~', '', trim($_GET['f'] ?? '')), 0, 64);
-$q      = substr(preg_replace('~\s+~', ' ', trim($_GET['q'] ?? '')), 0, 80);
-$ok     = substr(preg_replace('~[^A-Za-z0-9_-]~', '', trim($_GET['ok'] ?? '')), 0, 16);
+$folder = substr(preg_replace('~[^a-zA-Z0-9 _-]~', '', trim(get_str('f'))), 0, 64);
+$q      = substr(preg_replace('~\s+~', ' ', trim(get_str('q'))), 0, 80);
+$ok     = substr(preg_replace('~[^A-Za-z0-9_-]~', '', trim(get_str('ok'))), 0, 16);
 
 $per    = 48;
-$page   = max(1, (int)($_GET['p'] ?? 1));
+$page   = get_int('p', 1, 1, 100000);   // il tetto reale si applica dopo il conteggio
 $offset = ($page - 1) * $per;
 
 /* ---- Cartelle ---- */

@@ -40,13 +40,13 @@ function build_fts_query(string $q): string {
 /* =====================  POST: azioni  ===================== */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   csrf_check();
-  $act   = $_POST['act']   ?? '';
-  $short = $_POST['short'] ?? '';
+  $act   = post_str('act');
+  $short = post_str('short');
 
   if ($act === 'meta') {
-    $folder = norm_folder($_POST['folder'] ?? '');
+    $folder = norm_folder(post_str('folder'));
     db()->prepare("UPDATE images SET title=?, alt=?, folder=? WHERE short=?")
-        ->execute([$_POST['title'] ?? null, $_POST['alt'] ?? null, $folder, $short]);
+        ->execute([post_str('title'), post_str('alt'), $folder, $short]);
 
   } elseif ($act === 'delete') {
     delete_image($short);   // rimuove i file solo se nessun'altra copia li usa
@@ -77,7 +77,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
   } elseif ($act === 'move') {
     db()->prepare("UPDATE images SET folder=? WHERE short=?")
-        ->execute([norm_folder($_POST['dest_folder'] ?? ''), $short]);
+        ->execute([norm_folder(post_str('dest_folder')), $short]);
 
   } elseif ($act === 'copy') {
     $q = db()->prepare("SELECT filename,mime,size,width,height,title,alt FROM images WHERE short=?");
@@ -87,18 +87,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                      VALUES(?,?,?,?,?,?,?,?,?,?,?)")
           ->execute([shortcode(7), $r['filename'], $r['mime'], $r['size'], $r['width'], $r['height'],
                      $r['title'], $r['alt'], bin2hex(random_bytes(8)), time(),
-                     norm_folder($_POST['dest_folder'] ?? '')]);
+                     norm_folder(post_str('dest_folder'))]);
     }
   }
 
-  header("Location: " . $_SERVER['PHP_SELF'] . '?' . http_build_query(['q' => $_GET['q'] ?? '', 'p' => $_GET['p'] ?? 1]));
+  header("Location: " . $_SERVER['PHP_SELF'] . '?' . http_build_query(['q' => get_str('q'), 'p' => get_int('p', 1, 1, 100000)]));
   exit;
 }
 
 /* =====================  GET: elenco  ===================== */
-$q      = substr(preg_replace('~\s+~', ' ', trim($_GET['q'] ?? '')), 0, 80);
+$q      = substr(preg_replace('~\s+~', ' ', trim(get_str('q'))), 0, 80);
 $per    = 40;
-$page   = max(1, (int)($_GET['p'] ?? 1));
+$page   = get_int('p', 1, 1, 100000);
 $offset = ($page - 1) * $per;
 
 $folders = db()->query("

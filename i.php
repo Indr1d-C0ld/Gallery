@@ -3,7 +3,8 @@ require_once __DIR__ . "/config.php";
 
 function get_short_from_request(): ?string {
   // 1) query string ?c=SHORT
-  if (!empty($_GET['c'])) return preg_replace('~[^A-Za-z0-9_-]~', '', (string)$_GET['c']);
+  $c = get_str('c');
+  if ($c !== '') return preg_replace('~[^A-Za-z0-9_-]~', '', $c);
 
   // 2) path /gallery/i/SHORT o /gallery/t/SHORT (se rewrite attiva)
   $uri = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?: '';
@@ -56,7 +57,7 @@ if (!$short) { http_response_code(404); exit; }
 $want_thumb = false;
 
 // thumb=1 esplicito
-if (isset($_GET['thumb']) && (string)$_GET['thumb'] === '1') $want_thumb = true;
+if (get_str('thumb') === '1') $want_thumb = true;
 
 // se richiesto via path /gallery/t/SHORT (anche senza rewrite)
 $uri_path = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?: '';

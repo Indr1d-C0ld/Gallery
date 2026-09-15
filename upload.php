@@ -79,7 +79,7 @@ if ($gi[0] * $gi[1] > $MAX_PIXELS) {
 }
 
 /* 4) Folder (cartella logica in DB) */
-$folder = norm_folder($_POST['folder'] ?? '');
+$folder = norm_folder(post_str('folder'));
 
 /* 5) Genera identificativi */
 $short  = shortcode(7);
@@ -150,8 +150,8 @@ $stmt->execute([
   $mime,
   (int)filesize($dest),
   $w, $h,
-  $_POST['title'] ?? null,
-  $_POST['alt'] ?? null,
+  post_str('title') ?: null,
+  post_str('alt')   ?: null,
   $delkey,
   time(),
   $folder

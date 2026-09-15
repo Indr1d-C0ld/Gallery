@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-09-15 (2) — Ingressi robusti contro parametri di tipo inatteso
+
+Un parametro passato come array — `?q[]=a` invece di `?q=a` — faceva arrivare
+un array a `trim()`, con `TypeError` non gestito e risposta 500. Non era
+sfruttabile per ottenere dati (nessuna informazione trapela con
+`display_errors` disattivato) ma era un crash raggiungibile che sporcava i log.
+
+Tre aiutanti in `config.php` garantiscono ora il tipo atteso a monte:
+
+| Funzione | Garanzia |
+|---|---|
+| `get_str($k)` / `post_str($k)` | sempre `string`; array, bool, `null` → valore di default |
+| `get_int($k, $def, $min, $max)` | sempre `int`, già limitato all'intervallo |
+
+Applicati a `index.php`, `admin/index.php` (tutte le azioni POST comprese),
+`delete.php`, `i.php`, `upload.php`, `api/upload.php`. L'unico accesso diretto
+rimasto è un `isset($_GET['f'])`, che non converte tipi.
+
+Verificato: `?q[]=` `?f[]=` `?p[]=` `?ok[]=` e loro combinazioni rispondono
+200; `delete.php?c[]=&k[]=` risponde 400 invece di 403 con warning;
+`i.php?c[]=` risponde 404 pulito. Zero warning nel log. Regressione superata su
+ricerca FTS, token `folder:`, paginazione, upload con e senza metadati (i
+`NULL` restano `NULL`), tutte le azioni di amministrazione, e CSRF che respinge
+anche `csrf[]=x` con 419.
+
+`get_int('p', 1, 1, 100000)` limita anche il numero di pagina: mitiga in parte
+il rilievo sull'offset senza tetto, senza chiuderlo — manca il vincolo
+all'ultima pagina realmente esistente.
+
 ## 2026-09-15 — Audit: due difetti critici corretti
 
 Revisione avversariale integrale del codice: 13 rilievi complessivi, i due

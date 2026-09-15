@@ -6,7 +6,7 @@ if ($API_TOKEN === 'metti-qui-un-token-lungo' || strlen((string)$API_TOKEN) < 16
   exit("API disabilitata: imposta un API_TOKEN forte in secret.php\n");
 }
 
-$sent = $_GET['token'] ?? ($_SERVER['HTTP_X_API_TOKEN'] ?? '');
+$sent = get_str('token') ?: (is_string($_SERVER['HTTP_X_API_TOKEN'] ?? null) ? $_SERVER['HTTP_X_API_TOKEN'] : '');
 if (!hash_equals((string)$API_TOKEN, (string)$sent)) {
   http_response_code(401);
   exit("no\n");

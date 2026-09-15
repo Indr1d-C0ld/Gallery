@@ -121,8 +121,8 @@ function csrf_field(): string {
 }
 
 function csrf_check(): void {
-  $sent = $_POST['csrf'] ?? '';
-  if (!is_string($sent) || !hash_equals(csrf_token(), $sent)) {
+  $sent = post_str('csrf');
+  if (!hash_equals(csrf_token(), $sent)) {
     http_response_code(419);
     exit('CSRF token non valido: ricarica la pagina.');
   }
@@ -146,6 +146,31 @@ function db(): PDO {
 
 function shortcode(int $len = 7): string {
   return rtrim(strtr(base64_encode(random_bytes($len)), '+/', '-_'), '=');
+}
+
+/* --- Lettura parametri in ingresso ----------------------------------------
+ * PHP trasforma ?q[]=a in un array: passandolo a trim()/preg_replace() si
+ * ottiene un TypeError non gestito (500) o un warning silenzioso. Questi
+ * aiutanti garantiscono sempre il tipo atteso, qualunque cosa arrivi.
+ */
+function in_str(array $src, string $key, string $default = ''): string {
+  $v = $src[$key] ?? null;
+  if (is_string($v))               return $v;
+  if (is_int($v) || is_float($v))  return (string) $v;
+  return $default;                 // array, null, bool, oggetto -> default
+}
+
+function get_str(string $key, string $default = ''): string {
+  return in_str($_GET, $key, $default);
+}
+
+function post_str(string $key, string $default = ''): string {
+  return in_str($_POST, $key, $default);
+}
+
+function get_int(string $key, int $default = 0, int $min = PHP_INT_MIN, int $max = PHP_INT_MAX): int {
+  $n = (int) in_str($_GET, $key, (string) $default);
+  return max($min, min($max, $n));
 }
 
 /* --- Cancellazione sicura -------------------------------------------------
