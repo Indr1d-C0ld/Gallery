@@ -91,7 +91,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
   }
 
-  header("Location: " . $_SERVER['PHP_SELF'] . '?' . http_build_query(['q' => get_str('q'), 'p' => get_int('p', 1, 1, 100000)]));
+  header("Location: index.php?" . http_build_query(['q' => get_str('q'), 'p' => get_int('p', 1, 1, 100000)]));
   exit;
 }
 
@@ -112,6 +112,7 @@ if ($q !== '' && fts5_available()) {
   $fts = build_fts_query($q);
   $cnt = db()->prepare("SELECT COUNT(*) FROM images_fts JOIN images i ON i.id=images_fts.rowid WHERE images_fts MATCH ?");
   $cnt->execute([$fts]); $total = (int)$cnt->fetchColumn();
+  $offset = page_offset($page, $total, $per);
   $st = db()->prepare("SELECT $icols
     FROM images_fts JOIN images i ON i.id=images_fts.rowid WHERE images_fts MATCH ?
     ORDER BY bm25(images_fts), i.created_at DESC LIMIT $per OFFSET $offset");
@@ -120,18 +121,21 @@ if ($q !== '' && fts5_available()) {
   $like = "%$q%";
   $cnt = db()->prepare("SELECT COUNT(*) FROM images WHERE short LIKE ? OR title LIKE ? OR alt LIKE ? OR filename LIKE ? OR COALESCE(folder,'') LIKE ?");
   $cnt->execute([$like,$like,$like,$like,$like]); $total = (int)$cnt->fetchColumn();
+  $offset = page_offset($page, $total, $per);
   $st = db()->prepare("SELECT $cols FROM images
     WHERE short LIKE ? OR title LIKE ? OR alt LIKE ? OR filename LIKE ? OR COALESCE(folder,'') LIKE ?
     ORDER BY created_at DESC LIMIT $per OFFSET $offset");
   $st->execute([$like,$like,$like,$like,$like]); $rows = $st->fetchAll();
 } else {
-  $total = (int) db()->query("SELECT COUNT(*) FROM images")->fetchColumn();
+  $total  = (int) db()->query("SELECT COUNT(*) FROM images")->fetchColumn();
+  $offset = page_offset($page, $total, $per);
   $rows = db()->query("SELECT $cols FROM images ORDER BY created_at DESC LIMIT $per OFFSET $offset")->fetchAll();
 }
 $pages = max(1, (int)ceil($total / $per));
 $B = $BASE_URL;
 
-theme_head('Gallery · Admin', $total . ' record · utente ' . htmlspecialchars(current_user() ?? '?'));
+// theme_head() applica gia' l'escape: qui si passa testo grezzo (vedi #13)
+theme_head('Gallery · Admin', $total . ' record · utente ' . (current_user() ?? '?'));
 ?>
 
 <div class="bar">
@@ -139,7 +143,7 @@ theme_head('Gallery · Admin', $total . ' record · utente ' . htmlspecialchars(
     <input type="search" name="q" value="<?= htmlspecialchars($q) ?>"
            placeholder="folder:Viaggi title:mare id:abc123" style="min-width:300px">
     <button type="submit">Cerca</button>
-    <?php if ($q !== ''): ?><a class="btn ghost" href="<?= htmlspecialchars($_SERVER['PHP_SELF']) ?>">Reset</a><?php endif; ?>
+    <?php if ($q !== ''): ?><a class="btn ghost" href="index.php">Reset</a><?php endif; ?>
     <a class="btn ghost" href="<?= htmlspecialchars($B) ?>/">↗ galleria</a>
   </form>
   <?= theme_toggle() ?>
@@ -229,13 +233,11 @@ echo implode('  ·  ', $out);
 </div>
 
 <?php
-$pager = '';
-if ($pages > 1) {
-  $mk = fn($p) => htmlspecialchars($_SERVER['PHP_SELF'] . '?' . http_build_query(['q' => $q, 'p' => $p]));
-  $pager .= '<span class="pager">';
-  $pager .= $page > 1 ? '<a href="' . $mk($page - 1) . '">‹ prec</a>' : '<span>‹ prec</span>';
-  $pager .= " &nbsp; $page / $pages &nbsp; ";
-  $pager .= $page < $pages ? '<a href="' . $mk($page + 1) . '">succ ›</a>' : '<span>succ ›</span>';
-  $pager .= '</span>';
-}
-theme_foot($pager ?: ($total . ' record'), 'Pannello admin', false);
+$mk = fn($p) => 'index.php?' . http_build_query(['q' => $q, 'p' => $p]);
+theme_foot([
+  'page'  => $page,
+  'pages' => $pages,
+  'prev'  => $page > 1      ? $mk($page - 1) : null,
+  'next'  => $page < $pages ? $mk($page + 1) : null,
+  'label' => $total . ' record',
+], 'Pannello admin', false);

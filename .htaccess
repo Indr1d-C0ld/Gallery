@@ -26,13 +26,23 @@ Options -Indexes -MultiViews
   Require all denied
 </FilesMatch>
 
-# --- Directory di backup --------------------------------------------------
+# FilesMatch confronta solo il NOME del file, quindi un file dal nome normale
+# dentro una cartella nascosta (es. .claude/settings.local.json) gli sfugge.
+# Questa regola lavora sul percorso e copre qualunque segmento che inizi per
+# punto, a qualsiasi profondita'. Eccezione per .well-known (ACME/certbot).
+RedirectMatch 404 ^/gallery/(.*/)?\.(?!well-known/)
+
+# --- Directory di backup (spostata fuori dal docroot, regola di riserva) ---
 RedirectMatch 404 ^/gallery/_orig_backup_.*
 
 # --- Header di sicurezza -------------------------------------------------
 <IfModule mod_headers.c>
   Header always set X-Content-Type-Options "nosniff"
   Header always set Referrer-Policy "strict-origin-when-cross-origin"
+
+  # Non dichiarare la versione di PHP (expose_php resta On a livello server:
+  # per toglierlo del tutto serve php.ini, qui si rimuove almeno l'header).
+  Header always unset X-Powered-By
 
   # Solo le pagine applicative index.php (galleria + admin/), non i.php
   <FilesMatch "^index\.php$">

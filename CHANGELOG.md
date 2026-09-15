@@ -1,5 +1,42 @@
 # Changelog
 
+## 2026-09-15 (3) — Rifiniture dall'audit
+
+**Cartelle nascoste.** `<FilesMatch "^\.">` confronta solo il nome del file,
+quindi un file dal nome normale dentro una cartella nascosta gli sfuggiva.
+Aggiunta una regola sul percorso in `.htaccess`:
+`RedirectMatch 404 ^/gallery/(.*/)?\.(?!well-known/)`, con eccezione per ACME.
+Nota: Apache valuta l'autenticazione prima delle riscritture, quindi la regola
+protegge le richieste autenticate — le altre sono già fermate dal cancello.
+
+**File orfano su inserimento fallito.** `move_uploaded_file()` precede
+l'INSERT: se l'inserimento falliva (disco pieno, database bloccato, collisione
+di short-code) il file restava su disco senza riga corrispondente, invisibile
+dall'interfaccia ma perenne. L'INSERT è ora in `try/catch`; in caso di errore
+il file e l'eventuale miniatura vengono rimossi, l'errore finisce in
+`error_log` e si risponde 500.
+
+**`theme_foot()` non stampa più HTML grezzo.** La funzione riceveva il
+paginatore già marcato dai chiamanti. Ora accetta dati strutturati
+(`['page','pages','prev','next','label']`) e costruisce la marcatura
+internamente applicando `htmlspecialchars` a ogni valore.
+
+**Numero di pagina limitato a quelle esistenti.** Nuovo
+`page_offset(&$page, $total, $per)` in `config.php`: `?p=99999999` mostra
+l'ultima pagina reale invece di produrre un `OFFSET` enorme che fa scorrere
+l'intera tabella per restituire zero righe.
+
+**Doppio escape rimosso.** `theme_head()` applicava `htmlspecialchars` a
+valori che i chiamanti avevano già filtrato. L'unico punto responsabile è ora
+la funzione del tema.
+
+**`X-Powered-By` rimosso** via `.htaccess` (`Header always unset`). Il banner
+`Server:` richiede `ServerTokens Prod` nella configurazione del server.
+
+**`$_SERVER['PHP_SELF']` eliminato** da `admin/index.php` — è influenzabile dal
+client tramite `PATH_INFO`. Sostituito da un percorso relativo fisso nel
+redirect dopo POST e nel collegamento «Reset».
+
 ## 2026-09-15 (2) — Ingressi robusti contro parametri di tipo inatteso
 
 Un parametro passato come array — `?q[]=a` invece di `?q=a` — faceva arrivare

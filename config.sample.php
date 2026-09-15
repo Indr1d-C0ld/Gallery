@@ -173,6 +173,18 @@ function get_int(string $key, int $default = 0, int $min = PHP_INT_MIN, int $max
   return max($min, min($max, $n));
 }
 
+/* Limita la pagina richiesta a quelle realmente esistenti e restituisce
+ * l'OFFSET da usare. Senza questo, ?p=99999999 produce un OFFSET enorme e
+ * SQLite scorre l'intera tabella per restituire zero righe.
+ * $page viene corretto per riferimento, cosi' la paginazione mostra il numero
+ * giusto invece di una pagina fantasma.
+ */
+function page_offset(int &$page, int $total, int $per): int {
+  $pages = max(1, (int) ceil($total / $per));
+  $page  = max(1, min($page, $pages));
+  return ($page - 1) * $per;
+}
+
 /* --- Cancellazione sicura -------------------------------------------------
  * "Copia" duplica la riga ma NON il file: piu' short-code possono puntare
  * allo stesso filename. Rimuove i file da disco solo quando l'ultima riga

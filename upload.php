@@ -139,23 +139,35 @@ if ($USE_THUMBS) {
   }
 }
 
-/* 9) DB insert */
-$stmt = db()->prepare("
-  INSERT INTO images(short, filename, mime, size, width, height, title, alt, delkey, created_at, folder)
-  VALUES(?,?,?,?,?,?,?,?,?,?,?)
-");
-$stmt->execute([
-  $short,
-  $fname,
-  $mime,
-  (int)filesize($dest),
-  $w, $h,
-  post_str('title') ?: null,
-  post_str('alt')   ?: null,
-  $delkey,
-  time(),
-  $folder
-]);
+/* 9) DB insert
+ * Il file e' gia' su disco: se l'inserimento fallisce (disco pieno, DB
+ * bloccato, collisione di short-code) senza questo blocco resterebbe un file
+ * orfano — invisibile dall'interfaccia ma che occupa spazio per sempre.
+ */
+try {
+  $stmt = db()->prepare("
+    INSERT INTO images(short, filename, mime, size, width, height, title, alt, delkey, created_at, folder)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?)
+  ");
+  $stmt->execute([
+    $short,
+    $fname,
+    $mime,
+    (int)filesize($dest),
+    $w, $h,
+    post_str('title') ?: null,
+    post_str('alt')   ?: null,
+    $delkey,
+    time(),
+    $folder
+  ]);
+} catch (Throwable $e) {
+  @unlink($dest);                                  // niente riga, niente file
+  @unlink(rtrim($THUMBS, "/") . "/" . $fname);     // e nemmeno la miniatura
+  error_log('gallery upload: insert fallito per ' . $fname . ' — ' . $e->getMessage());
+  http_response_code(500);
+  exit("salvataggio non riuscito");
+}
 
 /* 10) Risposta */
 if (defined('GALLERY_API_CALL')) {

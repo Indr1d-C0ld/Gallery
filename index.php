@@ -79,7 +79,8 @@ if ($useFts) {
 
   $cnt = db()->prepare("SELECT COUNT(*) $from");
   $cnt->execute($args);
-  $total = (int)$cnt->fetchColumn();
+  $total  = (int)$cnt->fetchColumn();
+  $offset = page_offset($page, $total, $per);
 
   $st = db()->prepare("
     SELECT i.short,i.filename,i.mime,i.title,i.alt,i.width,i.height,i.size,i.created_at,COALESCE(i.folder,'') AS folder
@@ -101,7 +102,8 @@ if ($useFts) {
 
   $cnt = db()->prepare("SELECT COUNT(*) FROM images$w");
   $cnt->execute($args);
-  $total = (int)$cnt->fetchColumn();
+  $total  = (int)$cnt->fetchColumn();
+  $offset = page_offset($page, $total, $per);
 
   $st = db()->prepare("
     SELECT short,filename,mime,title,alt,width,height,size,created_at,COALESCE(folder,'') AS folder
@@ -118,7 +120,8 @@ $qs = function (array $ov = []) use ($scope, $folder, $q, $page) {
   return '?' . http_build_query(array_merge($base, $ov));
 };
 
-theme_head('Gallery', $total . ' fotogrammi' . ($scope === 'all' ? ' in archivio' : ' · ' . ($folder === '' ? 'senza album' : htmlspecialchars($folder))));
+// theme_head() applica gia' l'escape: qui si passa testo grezzo (vedi #13)
+theme_head('Gallery', $total . ' fotogrammi' . ($scope === 'all' ? ' in archivio' : ' · ' . ($folder === '' ? 'senza album' : $folder)));
 ?>
 
 <?php if ($ok !== ''): ?>
@@ -216,12 +219,10 @@ foreach ($rows as $r):
 <?php endif; ?>
 
 <?php
-$pager = '';
-if ($pages > 1) {
-  $pager .= '<span class="pager">';
-  $pager .= $page > 1 ? '<a href="' . htmlspecialchars($qs(['p' => $page - 1])) . '">‹ prec</a>' : '<span>‹ prec</span>';
-  $pager .= " &nbsp; pagina $page / $pages &nbsp; ";
-  $pager .= $page < $pages ? '<a href="' . htmlspecialchars($qs(['p' => $page + 1])) . '">succ ›</a>' : '<span>succ ›</span>';
-  $pager .= '</span>';
-}
-theme_foot($pager ?: ($total . ' fotogrammi'), 'Archivio privato');
+theme_foot([
+  'page'  => $page,
+  'pages' => $pages,
+  'prev'  => $page > 1      ? $qs(['p' => $page - 1]) : null,
+  'next'  => $page < $pages ? $qs(['p' => $page + 1]) : null,
+  'label' => $total . ' fotogrammi',
+], 'Archivio privato');

@@ -244,10 +244,40 @@ function theme_toggle(): string {
        . '</button>';
 }
 
-function theme_foot(string $footLeft = '', string $footRight = 'Archivio privato', bool $withLightbox = true): void {
+/* Piè di pagina.
+ * $pager: null oppure ['page'=>int, 'pages'=>int, 'prev'=>?string, 'next'=>?string,
+ *                      'label'=>string]  — la marcatura viene costruita QUI e
+ * ogni valore passa per htmlspecialchars. In precedenza questa funzione
+ * stampava HTML grezzo ricevuto dai chiamanti: nessuno lo sfruttava, ma era
+ * un invito all'errore alla prima occasione in cui vi fosse finito dentro un
+ * titolo preso dal database (rilievo #10 dell'audit).
+ */
+function theme_foot(?array $pager = null, string $footRight = 'Archivio privato', bool $withLightbox = true): void {
+  $left = '&nbsp;';
+
+  if ($pager !== null) {
+    $page  = (int)($pager['page']  ?? 1);
+    $pages = (int)($pager['pages'] ?? 1);
+
+    if ($pages > 1) {
+      $prev = $pager['prev'] ?? null;
+      $next = $pager['next'] ?? null;
+      $left  = '<span class="pager">';
+      $left .= $prev
+        ? '<a href="' . htmlspecialchars((string)$prev, ENT_QUOTES) . '">‹ prec</a>'
+        : '<span>‹ prec</span>';
+      $left .= ' &nbsp; pagina ' . $page . ' / ' . $pages . ' &nbsp; ';
+      $left .= $next
+        ? '<a href="' . htmlspecialchars((string)$next, ENT_QUOTES) . '">succ ›</a>'
+        : '<span>succ ›</span>';
+      $left .= '</span>';
+    } elseif (!empty($pager['label'])) {
+      $left = htmlspecialchars((string)$pager['label'], ENT_QUOTES);
+    }
+  }
   ?>
 <footer class="foot">
-  <div><?= $footLeft ?: '&nbsp;' ?></div>
+  <div><?= $left ?></div>
   <div class="arc"><?= htmlspecialchars($footRight, ENT_QUOTES) ?></div>
 </footer>
 </div><!-- /wrap -->
