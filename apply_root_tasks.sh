@@ -48,6 +48,16 @@ HTPASSWD_FILE="/etc/apache2/.htpasswd-gallery"
 SECRET_FILE="$GALLERY_DIR/secret.php"
 TS="$(date +%Y%m%d-%H%M%S)"
 
+# Il database puo' stare fuori dal docroot (chiave DB_PATH in secret.php):
+# lo si chiede all'app invece di codificarlo, cosi' lo script segue la
+# configurazione reale qualunque essa sia.
+DB_PATH="$(php -r '
+  $s = @include $argv[1];
+  $d = dirname($argv[1]);
+  echo (is_array($s) && !empty($s["DB_PATH"])) ? $s["DB_PATH"] : $d . "/gallery.db";
+' "$SECRET_FILE" 2>/dev/null)"
+[ -n "$DB_PATH" ] || DB_PATH="$GALLERY_DIR/gallery.db"
+
 c_ok(){   printf '  \033[32m✓\033[0m %s\n' "$*"; }
 c_info(){ printf '  \033[36m·\033[0m %s\n' "$*"; }
 c_warn(){ printf '  \033[33m!\033[0m %s\n' "$*"; }
@@ -192,9 +202,10 @@ if [ -f "$GALLERY_DIR/migrate.php" ]; then
     c_warn "migrate.php ha restituito un errore (vedi sopra) — proseguo"
   fi
   rm -f "/tmp/gallery_migrate.$$"
-  # eventuali file WAL creati devono restare del web user
-  for f in gallery.db gallery.db-wal gallery.db-shm; do
-    [ -e "$GALLERY_DIR/$f" ] && chown "$WEB_USER":"$WEB_GROUP" "$GALLERY_DIR/$f"
+  # eventuali file WAL creati devono restare del web user, ovunque stia il DB
+  DBDIR="$(dirname "$DB_PATH")"
+  for f in "$(basename "$DB_PATH")" "$(basename "$DB_PATH")-wal" "$(basename "$DB_PATH")-shm"; do
+    [ -e "$DBDIR/$f" ] && chown "$WEB_USER":"$WEB_GROUP" "$DBDIR/$f"
   done
 else
   c_warn "migrate.php non trovato — salto"
@@ -207,7 +218,7 @@ else
   step 5 "Verifica su https://$HOST/gallery/  (loopback su 127.0.0.1)"
   RES=(--resolve "$HOST:443:127.0.0.1" --resolve "$HOST:80:127.0.0.1")
   CURL=(curl -sS -k --max-time 15 "${RES[@]}" -o /dev/null -w '%{http_code}')
-  SHORT="$(sqlite3 "$GALLERY_DIR/gallery.db" 'SELECT short FROM images ORDER BY created_at DESC LIMIT 1' 2>/dev/null || true)"
+  SHORT="$(sqlite3 "file:$DB_PATH?immutable=1" 'SELECT short FROM images ORDER BY created_at DESC LIMIT 1' 2>/dev/null || true)"
   fail=0
 
   code="$("${CURL[@]}" "https://$HOST/gallery/" || true)"

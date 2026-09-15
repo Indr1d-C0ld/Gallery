@@ -13,6 +13,22 @@ return [
     // Domini ammessi per generare i link (protegge da Host header spoofing)
     'ALLOWED_HOSTS' => ['tuo-dominio.tld'],
 
-    // Percorso del DB, se diverso da <cartella-app>/gallery.db
+    // Percorso del database, se diverso da <cartella-app>/gallery.db.
+    //
+    // CONSIGLIATO: tenerlo fuori dal docroot. Cosi' la cartella del codice non
+    // deve essere scrivibile dall'utente del server web, e un'eventuale falla
+    // non permette di piazzare file eseguibili accanto all'applicazione.
+    //
+    // ATTENZIONE: SQLite in modalita' WAL (attiva per impostazione predefinita
+    // in config.php) deve poter creare gallery.db-wal e gallery.db-shm NELLA
+    // CARTELLA che contiene il database — non basta che il file .db sia
+    // scrivibile. La cartella indicata qui va quindi assegnata all'utente del
+    // server web:
+    //
+    //   sudo mkdir -p /var/lib/gallery
+    //   sudo mv <app>/gallery.db /var/lib/gallery/
+    //   sudo chown -R www-data:www-data /var/lib/gallery
+    //   sudo chmod 750 /var/lib/gallery
+    //
     // 'DB_PATH'    => '/var/lib/gallery/gallery.db',
 ];

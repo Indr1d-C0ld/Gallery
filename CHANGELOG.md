@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-09-15 (4) — Database fuori dal docroot
+
+La cartella dell'applicazione non deve essere scrivibile dall'utente del
+server web: altrimenti qualunque falla che permetta di scrivere un file si
+trasforma in una webshell stabile accanto al codice. L'unico ostacolo era il
+database, che risiedeva lì dentro.
+
+`config.php` già supportava `DB_PATH` da `secret.php`: ora la scelta è
+documentata in `secret.sample.php` con la procedura completa.
+
+> **Attenzione, requisito non ovvio.** SQLite in modalità WAL — attiva per
+> impostazione predefinita in `config.php` — deve poter creare
+> `gallery.db-wal` e `gallery.db-shm` **nella cartella che contiene il
+> database**. Non basta che il file `.db` sia scrivibile: rendendo la cartella
+> di sola lettura per il server web si ottiene
+> `attempt to write a readonly database` su ogni richiesta, comprese le
+> letture. La cartella indicata in `DB_PATH` va quindi assegnata all'utente
+> del server web, mentre quella del codice può restare in sola lettura.
+
+Assetto consigliato:
+
+| Percorso | Proprietario | Modo |
+|---|---|---|
+| cartella dell'applicazione | utente umano : gruppo del server web | `750` |
+| `uploads/`, `thumbs/` | server web | `775` |
+| cartella di `DB_PATH` | server web | `750` |
+| `secret.php` | utente umano : gruppo del server web | `640` |
+
+L'ultima riga merita attenzione: se una modifica a `secret.php` ne cambia il
+gruppo, il server web smette di leggerlo e l'applicazione va in errore senza
+che il motivo sia evidente.
+
 ## 2026-09-15 (3) — Rifiniture dall'audit
 
 **Cartelle nascoste.** `<FilesMatch "^\.">` confronta solo il nome del file,
