@@ -158,7 +158,8 @@ for _ in $(seq 50); do
 done
 
 if [ "$SERVE" -eq 1 ]; then
-  say "banco acceso: http://127.0.0.1:$PORT/gallery/  (gia' autenticato, Ctrl+C per chiudere)"
+  say "banco acceso: http://127.0.0.1:$PORT/gallery/  (gia' autenticato)"
+  echo "   per chiudere: Ctrl+C, oppure  kill $$  (il banco poi si cancella da solo)"
   echo "   log PHP: $BENCH/log/php_errors.log"
   wait "$SERVER_PID" || true
   exit 0

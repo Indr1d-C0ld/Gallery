@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-10-08 (3) — Immagini corrette e più leggere: GPS, orientamento, versioni ridotte
+
+**Posizione GPS tolta al caricamento.** Gli originali sono pubblici per
+l'hotlink: una foto da telefono rivelerebbe dove è stata scattata. I dati di
+posizione vengono tolti dal file temporaneo prima del salvataggio, **sul
+posto**: IFD GPS dell'EXIF svuotato (JPEG, PNG `eXIf`, WebP `EXIF`), tag GPS
+dell'XMP sostituiti da spazi (anche `drone-dji:Gps…`), chunk testuali PNG con
+posizione rimossi. Stessi pixel, stessa compressione, orientamento intatto.
+Solo per forme sconosciute l'immagine viene risalvata senza metadati; se non
+basta, il caricamento è rifiutato. JSON: `location_removed`.
+
+**Orientamento EXIF.** Miniature e versioni ridotte applicano l'orientamento
+(GD lo ignorava: le foto verticali da telefono uscivano coricate); larghezza
+e altezza registrate sono quelle mostrate dal browser.
+
+**Versioni ridotte: `/i/CODICE?w=640`.** WebP a larghezze fisse
+(`$DERIVED_WIDTHS` in config), generata alla prima richiesta e poi servita dal
+disco; mai più larga dell'originale, GIF esclusi, trasparenza conservata. Un
+solo lavoro GD alla volta (lock), per non esaurire la memoria con un
+endpoint pubblico. Lo snippet HTML usa `srcset`/`sizes`.
+
+**Miniature versionate e cache.** Negli snippet la miniatura porta `?v=`:
+rigenerarla cambia l'indirizzo. Originali immutabili per un anno; miniature e
+versioni ridotte immutabili solo con versione, altrimenti un giorno.
+
+**Banco.** Prove nuove su tutto quanto sopra, con file sintetici con GPS in
+EXIF/XMP/PNG e foto coricate; `live_check.sh` controlla anche che nessun
+originale pubblicato contenga una posizione.
+
 ## 2026-10-08 (2) — Pubblicare in pochi secondi: incolla, trascina, snippet, doppioni
 
 **Caricamento.** Il riquadro di caricamento accetta più file insieme, uno

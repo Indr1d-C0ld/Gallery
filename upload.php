@@ -26,10 +26,10 @@ function upload_fail(int $code, string $msg): void {
 }
 
 /* Esito positivo: immagine appena salvata oppure doppione gia' in archivio. */
-function upload_done(array $row, bool $duplicate): void {
+function upload_done(array $row, bool $duplicate, bool $location_removed = false): void {
   global $JSON, $BASE_URL;
   if ($JSON) {
-    $out = ['ok' => true, 'duplicate' => $duplicate] + snippet_data($row);
+    $out = ['ok' => true, 'duplicate' => $duplicate, 'location_removed' => $location_removed] + snippet_data($row);
     if (defined('GALLERY_API_CALL')) {
       $out['delete'] = $BASE_URL . '/delete.php?c=' . $row['short'] . '&k=' . $row['delkey'];
     }
@@ -105,10 +105,35 @@ if ($gi[0] * $gi[1] > $MAX_PIXELS) {
   ));
 }
 
+/* 3c) Dati di posizione: via dal file temporaneo, prima che diventi
+ * pubblico. Le immagini di /i/ sono servite cosi' come sono a chiunque le
+ * scarichi da un post: una foto da telefono porterebbe con se' le coordinate
+ * di dove e' stata scattata. Si tolgono sul posto (stessi pixel); solo se la
+ * posizione e' in una forma sconosciuta l'immagine viene risalvata senza
+ * metadati, e se nemmeno questo basta il caricamento viene rifiutato. */
+$loc = strip_location($f['tmp_name'], $mime);
+if ($loc < 0) {
+  upload_fail(422, "l'immagine contiene dati di posizione che non si riescono a togliere: caricamento rifiutato");
+}
+if ($loc === 2) {
+  $gi = @getimagesize($f['tmp_name']) ?: $gi;   // risalvata: misure e orientamento nuovi
+}
+
+/* 3d) Misure come le mostra il browser: con orientamento EXIF da 5 a 8 la
+ * foto e' salvata coricata, quindi larghezza e altezza vanno scambiate
+ * (servono giuste negli snippet HTML, attributi width/height). */
+$w = (int)$gi[0];
+$h = (int)$gi[1];
+if (image_orientation($f['tmp_name'], $mime) >= 5) {
+  [$w, $h] = [$h, $w];
+}
+
 /* 4) Folder (cartella logica in DB) */
 $folder = norm_folder(post_str('folder'));
 
 /* 4b) Doppioni: la stessa immagine, byte per byte, e' gia' in archivio?
+ * (L'impronta si calcola DOPO aver tolto la posizione: e' quella del file
+ * davvero salvato, e lo stesso scatto ricaricato da' lo stesso risultato.)
  * Allora si restituisce quella invece di salvarne un secondo file: lo stesso
  * screenshot incollato due volte da' lo stesso link. Fra piu' righe con lo
  * stesso file (nate da "Copia") si preferisce quella nello stesso album,
@@ -126,7 +151,7 @@ try {
   error_log('gallery upload: ricerca doppioni non riuscita — ' . $e->getMessage());
 }
 if ($existing) {
-  upload_done($existing, true);
+  upload_done($existing, true, $loc > 0);
 }
 
 /* 5) Genera identificativi */
@@ -143,10 +168,6 @@ if (!is_dir($UPLOADS)) {
 if (!move_uploaded_file($f['tmp_name'], $dest)) {
   upload_fail(500, "store failed");
 }
-
-/* 7) Dati immagine (gia' misurate al punto 3b) */
-$w = $gi[0];
-$h = $gi[1];
 
 /* 8) Thumbnail (se fallisce, i.php ritenta alla prima richiesta) */
 if ($USE_THUMBS) {
@@ -184,4 +205,4 @@ try {
 }
 
 /* 10) Risposta */
-upload_done($row, false);
+upload_done($row, false, $loc > 0);

@@ -29,7 +29,7 @@ if (get_str('thumb') === '1') $want_thumb = true;
 $uri_path = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?: '';
 if (preg_match('~^/gallery/t/([A-Za-z0-9_-]+)~', $uri_path)) $want_thumb = true;
 
-$st = db()->prepare("SELECT filename, mime FROM images WHERE short=?");
+$st = db()->prepare("SELECT filename, mime, width FROM images WHERE short=?");
 $st->execute([$short]);
 $r = $st->fetch(PDO::FETCH_ASSOC);
 if (!$r) { http_response_code(404); exit; }
@@ -43,6 +43,9 @@ $thumb_path = thumb_path($fname);
 if (!is_file($full_path)) { http_response_code(404); exit; }
 
 $serve_path = $full_path;
+$serve_mime = $mime;
+$serve_name = $fname;
+$fallback   = false;     // chiesta una versione ridotta, servito l'originale per ripiego
 
 // Se voglio la thumb: prova a servirla, se manca prova a generarla, altrimenti fallback su full
 if ($want_thumb && $USE_THUMBS) {
@@ -55,16 +58,41 @@ if ($want_thumb && $USE_THUMBS) {
   }
 }
 
+// Versione ridotta: /i/CODICE?w=640 -> WebP, prodotta una volta e poi servita
+// dal disco. Larghezze ammesse e regole in derived_width() (_images.php).
+$dw = $want_thumb ? 0 : derived_width(get_int('w', 0, 0, 100000), (int)$r['width'], $mime);
+if ($dw > 0) {
+  $dpath = derived_path($fname, $dw);
+  if (!is_file($dpath)) make_derived($full_path, $dpath, $mime, $dw);
+  if (is_file($dpath)) {
+    $serve_path = $dpath;
+    $serve_mime = 'image/webp';
+    $serve_name = pathinfo($fname, PATHINFO_FILENAME) . '.w' . $dw . '.webp';
+  } else {
+    $fallback = true;    // GD occupato o in errore: per ora l'originale
+  }
+}
+
 // Header corretti
-header("Content-Type: " . $mime);
-header('Content-Disposition: inline; filename="' . preg_replace('~[^A-Za-z0-9._-]~', '', $fname) . '"');
+header("Content-Type: " . $serve_mime);
+header('Content-Disposition: inline; filename="' . preg_replace('~[^A-Za-z0-9._-]~', '', $serve_name) . '"');
 header("X-Content-Type-Options: nosniff");
 // endpoint pubblico per hotlink: consente l'embed cross-origin
 header("Cross-Origin-Resource-Policy: cross-origin");
 header("Access-Control-Allow-Origin: *");
 
-// Cache: thumb e full possono essere cacheate a lungo (sono immutabili per SHORT)
-header("Cache-Control: public, max-age=31536000, immutable");
+// Cache. L'originale non cambia mai per un dato codice: un anno, immutabile.
+// Miniature e versioni ridotte invece si possono rigenerare: immutabili solo
+// se l'indirizzo porta una versione (?v=, la mettono gli snippet), altrimenti
+// un giorno. Il ripiego sull'originale al posto di una versione ridotta non
+// deve restare in cache: un minuto.
+if ($fallback) {
+  header("Cache-Control: public, max-age=60");
+} elseif ($serve_path === $full_path || get_str('v') !== '') {
+  header("Cache-Control: public, max-age=31536000, immutable");
+} else {
+  header("Cache-Control: public, max-age=86400");
+}
 
 // ETag/Last-Modified per cache efficiente
 $mtime = @filemtime($serve_path) ?: time();

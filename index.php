@@ -335,6 +335,7 @@ document.addEventListener('DOMContentLoaded', function () {
     job.msg.textContent = d.duplicate
       ? 'già in archivio' + (d.folder ? ' (album ' + d.folder + ')' : '') + ': link esistente, nessun doppione'
       : 'caricata · ' + d.width + '×' + d.height;
+    if (d.location_removed) job.msg.textContent += ' · posizione GPS rimossa';
     var box = el('div', 'snip'), copy = el('button', 'snip-copy', 'copia');
     var det = el('details'), all = el('div', 'copies');
     box.setAttribute('data-snip', JSON.stringify(d));

@@ -368,6 +368,22 @@ function theme_foot(?array $pager = null, string $footRight = 'Archivio privato'
   };
   function alt(s){ return s.alt || s.title || ''; }
   function wh(s){ return s.width ? ' width="'+s.width+'" height="'+s.height+'"' : ''; }
+  /* Versione ridotta (WebP, /i/CODICE?w=640): la versione della pipeline
+   * nell'indirizzo la rende cacheabile per sempre. */
+  function sized(s, w, amp){ return s.url+'?w='+w+(s.pv ? (amp ? '&amp;' : '&')+'v='+s.pv : ''); }
+  /* HTML responsive: i telefoni scaricano 480-640 px invece dell'originale.
+   * La colonna dei contenuti del blog e' ~800 px. */
+  function htmlImg(s){
+    var src = s.url, set = '', sizes = s.sizes || [];
+    if (sizes.length) {
+      var col = Math.min(s.width, 800);
+      set = ' srcset="'+sizes.map(function(w){ return sized(s, w, true)+' '+w+'w'; }).concat([s.url+' '+s.width+'w']).join(', ')+'"'
+          + ' sizes="(max-width: '+col+'px) 100vw, '+col+'px"';
+      var best = sizes.filter(function(w){ return w <= 1280; }).pop();
+      if (best) src = sized(s, best, true);
+    }
+    return '<img src="'+src+'"'+set+' alt="'+esc.html(alt(s))+'"'+wh(s)+' loading="lazy" decoding="async">';
+  }
   var FORMATS = [
     ['url',     'URL',                 function(s){ return s.url; }],
     ['md',      'Markdown · link',     function(s){ return '['+esc.md(s.title || s.alt || 'immagine')+']('+s.url+')'; }],
@@ -375,7 +391,7 @@ function theme_foot(?array $pager = null, string $footRight = 'Archivio privato'
     ['mdthumb', 'Markdown · miniatura',function(s){ return '[!['+esc.md(alt(s))+']('+s.thumb+')]('+s.url+')'; }],
     ['bb',      'BBCode',              function(s){ return '[img]'+s.url+'[/img]'; }],
     ['bbthumb', 'BBCode · miniatura',  function(s){ return '[url='+s.url+'][img]'+s.thumb+'[/img][/url]'; }],
-    ['html',    'HTML',                function(s){ return '<img src="'+s.url+'" alt="'+esc.html(alt(s))+'"'+wh(s)+' loading="lazy" decoding="async">'; }],
+    ['html',    'HTML',                function(s){ return htmlImg(s); }],
     ['hugo',    'Hugo · figure',       function(s){ return '{{< figure src="'+s.url+'" alt="'+esc.q(alt(s))+'"'+wh(s)+' >}}'; }],
     ['thumb',   'URL miniatura',       function(s){ return s.thumb; }]
   ];

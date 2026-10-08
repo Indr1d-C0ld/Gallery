@@ -1,5 +1,7 @@
 <?php
-/* Rigenera le miniature mancanti (con --all: tutte).
+/* Rigenera le miniature mancanti (con --all: tutte, e toglie le versioni
+ * ridotte ?w=, che si rifanno alla prima richiesta: da usare quando cambia
+ * il modo di produrle, insieme a IMAGE_PIPELINE in _images.php).
  *   php regen_thumbs.php [--all]
  * Sul live va eseguito come www-data (il DB e thumbs/ sono suoi). */
 if (php_sapi_name() !== 'cli') { require_once __DIR__."/config.php"; require_login(); }
@@ -7,10 +9,11 @@ else { require_once __DIR__."/config.php"; }
 require_once __DIR__ . "/_images.php";
 
 $all = in_array('--all', $argv ?? [], true);
-$made = 0; $failed = 0;
+$made = 0; $failed = 0; $dropped = 0;
 foreach (db()->query("SELECT filename,mime FROM images")->fetchAll() as $r) {
   $src = upload_path($r['filename']); $dst = thumb_path($r['filename']);
+  if ($all) $dropped += remove_derived($r['filename']);
   if (!is_file($src) || (!$all && is_file($dst))) continue;
   make_thumb($src, $dst, $r['mime']) ? $made++ : $failed++;
 }
-echo "done: $made generate, $failed non riuscite\n";
+echo "done: $made generate, $failed non riuscite" . ($all ? ", $dropped versioni ridotte tolte" : '') . "\n";

@@ -11,7 +11,11 @@
 #   2. HTTP senza credenziali (sul server stesso, 127.0.0.1): tutto protetto
 #      tranne la consegna delle immagini, che deve rispondere 200 image/*;
 #   3. schema del database alla stessa versione del codice, indice di ricerca
-#      allineato alla tabella images.
+#      allineato alla tabella images;
+#   4. nessun originale pubblicato con dati di posizione (GPS).
+#
+#  Unico effetto collaterale, come per qualunque visitatore: la richiesta di
+#  prova a /i/CODICE?w=640 fa produrre (una volta) quella versione ridotta.
 #
 #  --write-test  prova anche una SCRITTURA reale fatta dal server web: sposta
 #                da parte la miniatura piu' piccola, la fa rigenerare con una
@@ -153,6 +157,24 @@ elif [ "$N_FTS" = "$N_IMG" ]; then ok "indice di ricerca allineato: $N_FTS voci 
 else err "indice di ricerca disallineato: $N_FTS voci per $N_IMG immagini"; fi
 
 # ---------------------------------------------------------------------------
+say "Posizione GPS negli originali"
+if [ -f "$APP/_images.php" ] && php -r 'require $argv[1] . "/_images.php"; exit(function_exists("has_location") ? 0 : 1);' "$APP" 2>/dev/null; then
+  GPS="$(php -r '
+    require $argv[1] . "/_images.php";
+    $fi = new finfo(FILEINFO_MIME_TYPE); $n = 0; $hit = [];
+    foreach (glob($argv[1] . "/uploads/*") as $f) {
+      if (!is_file($f)) continue; $n++;
+      if (has_location($f, (string) $fi->file($f))) $hit[] = basename($f);
+    }
+    echo $n, " ", implode(",", $hit), "
+";' "$APP" 2>/dev/null)"
+  read -r N_ORIG HITS <<< "$GPS"
+  if [ -z "${HITS:-}" ]; then ok "nessuno su ${N_ORIG:-?} originali"; else err "originali con posizione: $HITS"; fi
+else
+  warn "codice senza controllo della posizione (has_location assente)"
+fi
+
+# ---------------------------------------------------------------------------
 say "HTTP senza credenziali (https://$HOST via 127.0.0.1)"
 CURL=(curl -sS -k --max-time 15 --resolve "$HOST:443:127.0.0.1")
 code() { "${CURL[@]}" -o /dev/null -w '%{http_code}' "https://$HOST$1" 2>/dev/null || echo 000; }
@@ -173,6 +195,14 @@ for kind in i t; do
   read -r c ct < <("${CURL[@]}" -o /dev/null -w '%{http_code} %{content_type}\n' "https://$HOST/gallery/$kind/$SHORT" 2>/dev/null || echo "000 -")
   [ "$c" = 200 ] && [[ "$ct" == image/* ]] && ok "/gallery/$kind/$SHORT -> 200 $ct" || err "/gallery/$kind/$SHORT -> $c $ct (atteso 200 image/*)"
 done
+# versione ridotta: la query string deve passare l'accesso pubblico di Apache
+if [ "$LATEST" -ge 3 ] && [ -n "$(grep -l make_derived "$APP/_images.php" 2>/dev/null)" ]; then
+  WIDE="$(SQ "SELECT short FROM images WHERE width > 640 AND mime <> 'image/gif' ORDER BY created_at DESC LIMIT 1")"
+  if [ -n "$WIDE" ]; then
+    read -r c ct < <("${CURL[@]}" -o /dev/null -w '%{http_code} %{content_type}\n' "https://$HOST/gallery/i/$WIDE?w=640" 2>/dev/null || echo "000 -")
+    [ "$c" = 200 ] && [ "$ct" = image/webp ] && ok "/gallery/i/$WIDE?w=640 -> 200 $ct" || err "/gallery/i/$WIDE?w=640 -> $c $ct (atteso 200 image/webp)"
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 if [ "$WRITE_TEST" -eq 1 ]; then

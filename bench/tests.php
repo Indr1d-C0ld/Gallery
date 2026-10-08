@@ -21,6 +21,7 @@ $WWW = $C['www'];
 $TMP = $C['bench'] . '/img';
 require $WWW . '/_migrations.php';          // solo definizioni di funzioni
 $EXPECT = range(1, schema_latest());        // versioni attese dopo la migrazione
+require $WWW . '/_images.php';              // per le prove unitarie: definizioni, nessun accesso al DB
 @mkdir($TMP, 0700, true);
 
 /* ---------- strumenti ---------- */
@@ -163,6 +164,74 @@ function log_since(int $off): string { global $C; return is_file($C['log']) ? (s
 /* Stato condiviso fra i gruppi */
 $live_shorts = []; $first = ''; $uploaded = []; $n_img = 0; $copy_migrated = false;
 
+/* Fabbrica di immagini con metadati noti (orientamento, GPS EXIF, XMP). */
+function fx_tiff(int $orientation, bool $gps): string {
+  $e = fn($tag, $type, $cnt, $val) => pack('vvV', $tag, $type, $cnt) . $val;
+  $n0 = ($orientation ? 1 : 0) + ($gps ? 1 : 0);
+  $gps_off = 8 + 2 + 12 * $n0 + 4;
+  $t = "II*\0" . pack('V', 8) . pack('v', $n0);
+  if ($orientation) $t .= $e(0x0112, 3, 1, pack('vv', $orientation, 0));
+  if ($gps) $t .= $e(0x8825, 4, 1, pack('V', $gps_off));
+  $t .= pack('V', 0);
+  if ($gps) {
+    $d = $gps_off + 2 + 12 * 4 + 4;
+    $r = fn($a, $b) => pack('VV', $a, $b);
+    $t .= pack('v', 4) . $e(1, 2, 2, "N\0\0\0") . $e(2, 5, 3, pack('V', $d)) . $e(3, 2, 2, "E\0\0\0") . $e(4, 5, 3, pack('V', $d + 24)) . pack('V', 0);
+    $t .= $r(37, 1) . $r(24, 1) . $r(1234, 100) . $r(14, 1) . $r(55, 1) . $r(120, 100);
+  }
+  return $t;
+}
+function fx_xmp(): string {
+  return '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+       . '<rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:drone-dji="http://www.dji.com/drone-dji/1.0/"'
+       . ' exif:GPSLatitude="37,24.2N" exif:GPSLongitude="14,55.1E" xmp:CreatorTool="Prova">'
+       . '<drone-dji:GpsLatitude>37.4034</drone-dji:GpsLatitude><drone-dji:GpsLongitude>14.9200</drone-dji:GpsLongitude>'
+       . '</rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end="w"?>';
+}
+/* Immagine di prova: blocco rosso in alto a sinistra, resto blu. */
+function fx_gd(int $w, int $h) {
+  $im = imagecreatetruecolor($w, $h);
+  imagefill($im, 0, 0, imagecolorallocate($im, 30, 60, 200));
+  imagefilledrectangle($im, 0, 0, intdiv($w, 4), intdiv($h, 4), imagecolorallocate($im, 220, 20, 20));
+  return $im;
+}
+function fx_jpeg(int $w, int $h, int $orientation, bool $gps, bool $xmp, ?string $comment = null): string {
+  ob_start(); imagejpeg(fx_gd($w, $h), null, 90); $j = ob_get_clean();
+  $seg = fn($m, $data) => "\xFF" . chr($m) . pack('n', strlen($data) + 2) . $data;
+  $ins = '';
+  if ($orientation || $gps) $ins .= $seg(0xE1, "Exif\0\0" . fx_tiff($orientation, $gps));
+  if ($xmp) $ins .= $seg(0xE1, "http://ns.adobe.com/xap/1.0/\0" . fx_xmp());
+  if ($comment !== null) $ins .= $seg(0xFE, $comment);
+  return substr($j, 0, 2) . $ins . substr($j, 2);
+}
+function fx_png(int $w, int $h, bool $gps, bool $xmp): string {
+  $im = fx_gd($w, $h); imagesavealpha($im, true);
+  imagefilledrectangle($im, $w - 10, $h - 10, $w - 1, $h - 1, imagecolorallocatealpha($im, 0, 0, 0, 127));
+  ob_start(); imagepng($im); $p = ob_get_clean();
+  $ch = fn($t, $d) => pack('N', strlen($d)) . $t . $d . pack('N', crc32($t . $d));
+  $ins = '';
+  if ($gps) $ins .= $ch('eXIf', fx_tiff(1, true));
+  if ($xmp) $ins .= $ch('iTXt', "XML:com.adobe.xmp\0\0\0\0\0" . fx_xmp());
+  return substr($p, 0, 33) . $ins . substr($p, 33);
+}
+function fx_webp(int $w, int $h, bool $gps, bool $xmp): string {
+  ob_start(); imagewebp(fx_gd($w, $h), null, 85); $b = ob_get_clean();
+  $ch = fn($t, $d) => $t . pack('V', strlen($d)) . $d . (strlen($d) & 1 ? "\0" : '');
+  if ($gps) $b .= $ch('EXIF', fx_tiff(1, true));
+  if ($xmp) $b .= $ch('XMP ', fx_xmp());
+  return substr_replace($b, pack('V', strlen($b) - 8), 4, 4);
+}
+/* CRC di tutti i chunk di un PNG validi? */
+function fx_png_crc_ok(string $b): bool {
+  $p = 8; $n = strlen($b);
+  while ($p + 12 <= $n) {
+    $len = unpack('N', substr($b, $p, 4))[1]; $t = substr($b, $p + 4, 4);
+    if (unpack('N', substr($b, $p + 8 + $len, 4))[1] !== crc32($t . substr($b, $p + 8, $len))) return false;
+    $p += 12 + $len; if ($t === 'IEND') return true;
+  }
+  return false;
+}
+
 /* ======================================================================= */
 group('Migrazioni sulla copia del DB reale', function () use (&$live_shorts, &$first, &$uploaded, &$n_img, &$copy_migrated, $C, $WWW, $TMP, $EXPECT) {
   $live_shorts = db_bench()->query("SELECT short FROM images ORDER BY id")->fetchAll(PDO::FETCH_COLUMN);
@@ -287,7 +356,7 @@ group('API', function () use (&$live_shorts, &$first, &$uploaded, &$n_img, &$cop
   $j = json_decode($r['body'], true);
   check('upload API con X-Api-Token -> JSON ok', $r['code'] === 200 && ($j['ok'] ?? false) === true && str_starts_with($j['url'] ?? '', $C['base'] . '/gallery/i/'), "HTTP {$r['code']} " . substr($r['body'], 0, 80));
   check('  JSON API: miniatura /t/, misure, link di cancellazione, duplicate=false',
-    ($j['thumb'] ?? '') === $C['base'] . '/gallery/t/' . ($j['id'] ?? '') && ($j['width'] ?? 0) === 400 && ($j['height'] ?? 0) === 300
+    str_starts_with($j['thumb'] ?? '', $C['base'] . '/gallery/t/' . ($j['id'] ?? '') . '?v=') && ($j['width'] ?? 0) === 400 && ($j['height'] ?? 0) === 300
     && str_contains($j['delete'] ?? '', '/delete.php?c=') && ($j['duplicate'] ?? null) === false);
   if (!empty($j['id'])) $api_short = $j['id'];
   $r = req('POST', '/gallery/api/upload.php', ['auth' => true, 'headers' => ['X-Api-Token: sbagliato-sbagliato-sbagliato'], 'post' => ['file' => new CURLFile($f, 'image/jpeg', 'api.jpg')]]);
@@ -366,7 +435,7 @@ group('Doppioni, risposta JSON, snippet', function () use (&$live_shorts, &$firs
   $id = $j['id'] ?? '';
   check('caricatore: risposta JSON ok, duplicate=false', $r['code'] === 200 && ($j['ok'] ?? false) === true && ($j['duplicate'] ?? null) === false, "HTTP {$r['code']} " . substr($r['body'], 0, 100));
   check('  JSON: url /i/, miniatura /t/, misure, album, titolo',
-    ($j['url'] ?? '') === $C['base'] . "/gallery/i/$id" && ($j['thumb'] ?? '') === $C['base'] . "/gallery/t/$id"
+    ($j['url'] ?? '') === $C['base'] . "/gallery/i/$id" && str_starts_with($j['thumb'] ?? '', $C['base'] . "/gallery/t/$id?v=")
     && ($j['width'] ?? 0) === 700 && ($j['height'] ?? 0) === 300 && ($j['folder'] ?? '') === 'Banco' && ($j['title'] ?? '') === 'json prova');
   check('  JSON del caricatore senza link di cancellazione (solo API)', !isset($j['delete']));
   check('  impronta salvata nella riga', $id !== '' && (row($id)['sha256'] ?? '') === hash_file('sha256', $f));
@@ -423,10 +492,189 @@ group('Doppioni, risposta JSON, snippet', function () use (&$live_shorts, &$firs
     $sn = array_values(array_filter(snips($html), fn($d) => ($d['id'] ?? '') === $xid));
     check("$where: data-snip con titolo e alt esatti, misure e indirizzi",
       $sn && $sn[0]['title'] === $evil_title && $sn[0]['alt'] === $evil_alt && $sn[0]['width'] === 333
-      && $sn[0]['url'] === $C['base'] . "/gallery/i/$xid" && $sn[0]['thumb'] === $C['base'] . "/gallery/t/$xid");
+      && $sn[0]['url'] === $C['base'] . "/gallery/i/$xid" && str_starts_with($sn[0]['thumb'], $C['base'] . "/gallery/t/$xid?v="));
     check("$where: nessun tag iniettato nell'HTML", !str_contains($html, '<img src=x') && !str_contains($html, '<b>alt</b>'));
     check("$where: selettore del formato presente", str_contains($html, 'data-snip-format'));
   }
+});
+
+/* ======================================================================= */
+group('Posizione GPS, orientamento, versioni ridotte, cache', function () use (&$live_shorts, &$first, &$uploaded, &$n_img, &$copy_migrated, $C, $WWW, $TMP, $EXPECT) {
+  $corner = function ($im): array {       // dove sta il blocco rosso
+    $w = imagesx($im); $h = imagesy($im); $c = [];
+    foreach (['TL' => [1, 1], 'TR' => [$w - 2, 1], 'BL' => [1, $h - 2], 'BR' => [$w - 2, $h - 2]] as $k => [$x, $y]) {
+      $rgb = imagecolorat($im, $x, $y);
+      if (($rgb >> 16 & 255) > 150 && ($rgb & 255) < 120) $c[] = $k;
+    }
+    return $c;
+  };
+  $stored = fn(string $id) => "$WWW/uploads/" . row($id)['filename'];
+
+  // a) orientamento: le 8 trasformazioni EXIF, codice dell'app
+  $bad = [];
+  foreach ([1 => 'TL', 2 => 'TR', 3 => 'BR', 4 => 'BL', 5 => 'TL', 6 => 'TR', 7 => 'BR', 8 => 'BL'] as $o => $exp) {
+    $im = orient_gd(fx_gd(40, 20), $o);
+    $dims = $o >= 5 ? [20, 40] : [40, 20];
+    if ($corner($im) !== [$exp] || [imagesx($im), imagesy($im)] !== $dims) $bad[] = $o;
+  }
+  check('orientamento EXIF 1-8 applicato correttamente', !$bad, 'sbagliati: ' . implode(',', $bad));
+
+  // b) JPEG da telefono: GPS in EXIF e XMP (anche stile drone DJI), foto verticale salvata coricata
+  $src = fx_jpeg(1600, 800, 6, true, true);
+  file_put_contents("$TMP/telefono.jpg", $src);
+  check('  (il file di prova ha davvero GPS e orientamento 6)', has_location("$TMP/telefono.jpg", 'image/jpeg') && image_orientation("$TMP/telefono.jpg", 'image/jpeg') === 6);
+  [$r, $j] = upload_json("$TMP/telefono.jpg", 'image/jpeg', ['folder' => 'Banco']);
+  $gid = $j['id'] ?? '';
+  check('JPEG con GPS: caricato, location_removed=true', ($j['ok'] ?? false) === true && ($j['location_removed'] ?? null) === true, $r['body']);
+  $out = (string) @file_get_contents($stored($gid));
+  $ex = @exif_read_data($stored($gid), null, true);
+  check('  originale salvato senza posizione (EXIF e XMP)', !has_location($stored($gid), 'image/jpeg') && empty($ex['GPS']['GPSLatitude'])
+    && !preg_match('~gps(latitude|longitude)~i', $out), json_encode($ex['GPS'] ?? null));
+  check('  orientamento e resto del file intatti (stessa lunghezza, dati compressi identici)',
+    ($ex['IFD0']['Orientation'] ?? 0) === 6 && strlen($out) === strlen($src)
+    && substr($out, strpos($out, "\xFF\xDA")) === substr($src, strpos($src, "\xFF\xDA")));
+  check('  impronta del DB = file salvato (non quello inviato)', row($gid)['sha256'] === hash('sha256', $out));
+  check('  misure registrate come le mostra il browser: 800×1600', (int) row($gid)['width'] === 800 && (int) row($gid)['height'] === 1600);
+  $th = @imagecreatefromstring((string) @file_get_contents("$WWW/thumbs/" . row($gid)['filename']));
+  check('  miniatura dritta: 160×320, angolo rosso in alto a destra', $th && [imagesx($th), imagesy($th)] === [160, 320] && $corner($th) === ['TR']);
+  $d = req('GET', "/gallery/i/$gid?w=640");
+  $dim = @imagecreatefromstring($d['body']);
+  check('  versione ridotta dritta: WebP 640×1280, angolo in alto a destra', ($d['h']['content-type'] ?? '') === 'image/webp' && $dim
+    && [imagesx($dim), imagesy($dim)] === [640, 1280] && $corner($dim) === ['TR']);
+  [$r, $j2] = upload_json("$TMP/telefono.jpg", 'image/jpeg', ['folder' => 'Banco']);
+  check('  lo stesso scatto ricaricato e\' riconosciuto come doppione', ($j2['duplicate'] ?? null) === true && ($j2['id'] ?? '') === $gid);
+  check('  JSON con larghezze ridotte e versione della pipeline', ($j['sizes'] ?? null) === [480, 640] && ($j['pv'] ?? null) === IMAGE_PIPELINE, json_encode([$j['sizes'] ?? null, $j['pv'] ?? null]));
+
+  // c) PNG con eXIf GPS e XMP: pixel identici, CRC validi
+  $png = fx_png(700, 400, true, true);
+  file_put_contents("$TMP/gps.png", $png);
+  [$r, $jp] = upload_json("$TMP/gps.png", 'image/png', ['folder' => 'Banco']);
+  $sp = (string) @file_get_contents($stored($jp['id'] ?? ''));
+  $px = function (string $bin) { $im = @imagecreatefromstring($bin); if (!$im) return null; imagesavealpha($im, true); ob_start(); imagepng($im); return sha1(ob_get_clean()); };
+  check('PNG con GPS: posizione tolta, CRC validi, pixel identici', ($jp['location_removed'] ?? null) === true
+    && !has_location($stored($jp['id']), 'image/png') && fx_png_crc_ok($sp) && $px($sp) !== null && $px($sp) === $px($png));
+
+  // d) WebP con EXIF GPS e XMP
+  file_put_contents("$TMP/gps.webp", fx_webp(800, 500, true, true));
+  [$r, $jw] = upload_json("$TMP/gps.webp", 'image/webp', ['folder' => 'Banco']);
+  $sw = (string) @file_get_contents($stored($jw['id'] ?? ''));
+  check('WebP con GPS: posizione tolta sul posto, immagine valida', ($jw['location_removed'] ?? null) === true
+    && !has_location($stored($jw['id']), 'image/webp') && strlen($sw) === filesize("$TMP/gps.webp") && @imagecreatefromstring($sw));
+
+  // e) posizione in una forma sconosciuta (commento JPEG): ultima risorsa, immagine risalvata
+  file_put_contents("$TMP/commento.jpg", fx_jpeg(600, 300, 0, false, false, 'nota exif:GPSLatitude="37,24N"'));
+  [$r, $jc] = upload_json("$TMP/commento.jpg", 'image/jpeg', ['folder' => 'Banco']);
+  check('posizione in forma sconosciuta: immagine risalvata senza metadati', ($jc['location_removed'] ?? null) === true
+    && !has_location($stored($jc['id'] ?? ''), 'image/jpeg') && @imagecreatefromstring((string) file_get_contents($stored($jc['id']))));
+
+  // f) file senza posizione: non si tocca nulla
+  file_put_contents("$TMP/pulita.jpg", fx_jpeg(500, 300, 0, false, false));
+  [$r, $jn] = upload_json("$TMP/pulita.jpg", 'image/jpeg', ['folder' => 'Banco']);
+  check('immagine senza posizione: salvata identica, location_removed=false', ($jn['location_removed'] ?? null) === false
+    && sha1_file($stored($jn['id'] ?? '')) === sha1_file("$TMP/pulita.jpg"));
+
+  // g) versioni ridotte su richiesta
+  $big = null; $alpha = null; $gif = null; $mid = null;
+  foreach ($uploaded as $id => $u) {
+    if ($u['label'] === 'jpg 1600×1200') $big = $id;
+    if ($u['label'] === 'png 640×480') $alpha = $id;
+    if ($u['label'] === 'gif 300×200') $gif = $id;
+    if ($u['label'] === 'webp 500×500') $mid = $id;
+  }
+  $fn = row($big)['filename'];
+  $d = req('GET', "/gallery/i/$big?w=640");
+  $im = @imagecreatefromstring($d['body']);
+  check('?w=640 su 1600×1200: WebP 640×480', ($d['h']['content-type'] ?? '') === 'image/webp' && $im && [imagesx($im), imagesy($im)] === [640, 480]);
+  check('  salvata come thumbs/FILE.w640.webp, nome scaricato .w640.webp',
+    is_file("$WWW/thumbs/$fn.w640.webp") && str_contains($d['h']['content-disposition'] ?? '', '.w640.webp'));
+  clearstatcache(); $m0 = filemtime("$WWW/thumbs/$fn.w640.webp");
+  sleep(1);
+  req('GET', "/gallery/i/$big?w=640");
+  clearstatcache();
+  check('  seconda richiesta servita dal disco, non rigenerata', filemtime("$WWW/thumbs/$fn.w640.webp") === $m0);
+  $im = @imagecreatefromstring(req('GET', "/gallery/i/$big?w=700")['body']);
+  check('?w=700 prende la larghezza ammessa successiva (960×720)', $im && [imagesx($im), imagesy($im)] === [960, 720]);
+  $orig = (string) file_get_contents("$WWW/uploads/$fn");
+  foreach (['?w=5000' => 'oltre la larghezza massima', '?w=abc' => 'non numerico', '?w[]=1' => 'array', '?w=-5' => 'negativo', '?w=0' => 'zero'] as $q => $why) {
+    $d = req('GET', "/gallery/i/$big$q");
+    check("?w $why ($q): l'originale", $d['code'] === 200 && $d['body'] === $orig && ($d['h']['content-type'] ?? '') === 'image/jpeg');
+  }
+  $d = req('GET', "/gallery/i/$gif?w=100");
+  check('GIF: sempre l\'originale (GD perderebbe l\'animazione)', ($d['h']['content-type'] ?? '') === 'image/gif');
+  check('immagine piu\' stretta della larghezza chiesta (500 px, ?w=640): l\'originale',
+    req('GET', "/gallery/i/$mid?w=640")['body'] === file_get_contents("$WWW/uploads/" . row($mid)['filename']));
+  $im = @imagecreatefromstring(req('GET', "/gallery/i/$mid?w=480")['body']);
+  check('  ma 480 su 500 px si', $im && imagesx($im) === 480);
+  $im = @imagecreatefromstring(req('GET', "/gallery/i/$alpha?w=480")['body']);
+  check('PNG trasparente -> WebP con trasparenza', $im && ((imagecolorat($im, 400, 300) >> 24) & 0x7F) > 0);
+  $t = req('GET', "/gallery/t/$big?w=640");
+  check('/t/ ignora ?w: resta la miniatura', ($t['h']['content-type'] ?? '') === 'image/jpeg' && max(getimagesizefromstring($t['body'])[0], getimagesizefromstring($t['body'])[1]) <= 320);
+  check('nessun file temporaneo in thumbs/', !glob("$WWW/thumbs/*.tmp-*") && !glob("$WWW/thumbs/*.clean*"));
+
+  // h) cache: immutabile solo cio' che non puo' cambiare o porta una versione
+  $cc = fn(string $p) => req('GET', $p)['h']['cache-control'] ?? '';
+  check('cache: originale /i/ immutabile', str_contains($cc("/gallery/i/$big"), 'immutable'));
+  check('cache: /t/ senza versione un giorno, con ?v= immutabile',
+    $cc("/gallery/t/$big") === 'public, max-age=86400' && str_contains($cc("/gallery/t/$big?v=123"), 'immutable'));
+  check('cache: ?w= senza versione un giorno, con &v= immutabile',
+    $cc("/gallery/i/$big?w=640") === 'public, max-age=86400' && str_contains($cc("/gallery/i/$big?w=640&v=1"), 'immutable'));
+
+  // i) snippet: miniatura con versione, che cambia quando la si rigenera
+  $snipOf = function (string $id) {
+    $html = req('GET', '/gallery/?q=' . rawurlencode("id:$id"), ['auth' => true])['body'];
+    return array_values(array_filter(snips($html), fn($d) => ($d['id'] ?? '') === $id))[0] ?? null;
+  };
+  $s1 = $snipOf($big);
+  clearstatcache();
+  check('snippet: miniatura con ?v=data della miniatura, larghezze ridotte giuste',
+    $s1 && str_ends_with($s1['thumb'], '?v=' . filemtime("$WWW/thumbs/$fn")) && $s1['sizes'] === [480, 640, 960, 1280], json_encode($s1));
+  sleep(1);
+  browser_post('/gallery/admin/index.php', ['csrf' => csrf(), 'act' => 'retthumb', 'short' => $big]);
+  $s2 = $snipOf($big);
+  check('  dopo "Rigenera thumb" l\'indirizzo della miniatura cambia', $s1 && $s2 && $s1['thumb'] !== $s2['thumb'], ($s1['thumb'] ?? '') . ' / ' . ($s2['thumb'] ?? ''));
+
+  // j) eliminare: le versioni ridotte se ne vanno con l'ultima riga del file
+  $gfn = row($gid)['filename'];
+  browser_post('/gallery/admin/index.php', ['csrf' => csrf(), 'act' => 'copy', 'short' => $gid, 'dest_folder' => 'Copie3']);
+  $gcopy = (string) q1("SELECT short FROM images WHERE filename=? AND short<>?", [$gfn, $gid]);
+  browser_post('/gallery/admin/index.php', ['csrf' => csrf(), 'act' => 'delete', 'short' => $gcopy]);
+  check('eliminata una copia: la versione ridotta resta', is_file("$WWW/thumbs/$gfn.w640.webp"));
+  req('GET', "/gallery/delete.php?c=$gid&k=" . row($gid)['delkey'], ['auth' => true]);
+  check('  eliminato l\'ultimo: originale, miniatura e versioni ridotte spariscono',
+    !is_file("$WWW/uploads/$gfn") && !is_file("$WWW/thumbs/$gfn") && !glob("$WWW/thumbs/$gfn.w*"));
+
+  // k) tante richieste insieme di versioni non ancora fatte: lock, nessun errore
+  $cand = db_bench()->query("SELECT short FROM images WHERE width > 480 AND mime <> 'image/gif' ORDER BY id LIMIT 12")->fetchAll(PDO::FETCH_COLUMN);
+  $mh = curl_multi_init(); $hs = [];
+  foreach ($cand as $sh) {
+    $ch = curl_init($C['base'] . "/gallery/i/$sh?w=480");
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 60, CURLOPT_HEADER => true]);
+    curl_multi_add_handle($mh, $ch); $hs[] = $ch;
+  }
+  do { $st = curl_multi_exec($mh, $running); if ($running) curl_multi_select($mh, 1); } while ($running && $st === CURLM_OK);
+  $codes = array_map(fn($ch) => (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE), $hs);
+  check(count($cand) . ' versioni ridotte chieste insieme: tutte 200', count(array_filter($codes, fn($c) => $c === 200)) === count($cand), json_encode(array_count_values($codes)));
+  check('  lock presente, nessun file temporaneo', is_file("$WWW/thumbs/.gd.lock") && !glob("$WWW/thumbs/*.tmp-*"));
+
+  // l) l'archivio copiato: ogni immagine a ?w=640
+  $bad = []; $made = 0;
+  foreach (db_bench()->query("SELECT short, mime, width FROM images WHERE short IN ('" . implode("','", $live_shorts) . "')") as $row) {
+    $d = req('GET', "/gallery/i/{$row['short']}?w=640");
+    $ct = $d['h']['content-type'] ?? '';
+    $wantDerived = (int) $row['width'] > 640 && $row['mime'] !== 'image/gif';
+    if ($wantDerived) {
+      $gi = @getimagesizefromstring($d['body']);
+      if ($ct !== 'image/webp' || !$gi || $gi[0] !== 640) $bad[] = $row['short']; else $made++;
+    } elseif ($ct !== $row['mime']) {
+      $bad[] = $row['short'];
+    }
+  }
+  check("archivio: ogni immagine a ?w=640 giusta ($made ridotte, le altre originali)", !$bad, implode(',', array_slice($bad, 0, 5)));
+
+  // m) regen_thumbs --all toglie le versioni ridotte (si rifanno su richiesta)
+  $n = count(glob("$WWW/thumbs/*.w*.webp"));
+  $out = trim((string) shell_exec('cd ' . escapeshellarg($WWW) . ' && php -d error_log=' . escapeshellarg($C['log']) . ' regen_thumbs.php --all 2>&1'));
+  check("regen_thumbs.php --all toglie le $n versioni ridotte", $n > 0 && !glob("$WWW/thumbs/*.w*.webp") && str_contains($out, "$n versioni ridotte tolte"), $out);
 });
 
 /* ======================================================================= */

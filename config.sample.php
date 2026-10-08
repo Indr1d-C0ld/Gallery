@@ -50,6 +50,10 @@ $THUMBS  = __DIR__ . '/thumbs';
 $USE_THUMBS  = true;
 $THUMB_MAX_W = 320;
 
+/* Versioni ridotte in WebP su richiesta: /i/CODICE?w=640 (vedi _images.php).
+ * Solo queste larghezze: una richiesta diversa prende la prima che basta. */
+$DERIVED_WIDTHS = [480, 640, 960, 1280, 1920];
+
 $ALLOWED = [
   'image/jpeg' => 'jpg',
   'image/png'  => 'png',
@@ -226,6 +230,7 @@ function delete_image(string $short): bool {
     require_once __DIR__ . '/_images.php';
     @unlink(upload_path($r['filename']));
     @unlink(thumb_path($r['filename']));
+    remove_derived($r['filename']);
   }
   return true;
 }
