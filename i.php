@@ -29,10 +29,18 @@ if (get_str('thumb') === '1') $want_thumb = true;
 $uri_path = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?: '';
 if (preg_match('~^/gallery/t/([A-Za-z0-9_-]+)~', $uri_path)) $want_thumb = true;
 
-$st = db()->prepare("SELECT filename, mime, width FROM images WHERE short=?");
+$st = db()->prepare("SELECT filename, mime, width, deleted_at FROM images WHERE short=?");
 $st->execute([$short]);
 $r = $st->fetch(PDO::FETCH_ASSOC);
-if (!$r) { http_response_code(404); exit; }
+if (!$r) {
+  // codice di una vecchia copia, fusa nell'originale dalla migrazione v4
+  $st = db()->prepare("SELECT i.filename, i.mime, i.width, i.deleted_at FROM short_aliases a
+                       JOIN images i ON i.id = a.image_id WHERE a.short=?");
+  $st->execute([$short]);
+  $r = $st->fetch(PDO::FETCH_ASSOC);
+}
+// nel cestino: non piu' pubblica (i file restano, per il ripristino)
+if (!$r || $r['deleted_at'] !== null) { http_response_code(404); exit; }
 
 $fname = $r['filename'];
 $mime  = $r['mime'];

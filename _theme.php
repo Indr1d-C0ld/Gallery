@@ -241,6 +241,33 @@ select{font-family:var(--mono);font-size:12px;color:var(--ink);background:var(--
 .dropzone span{font-family:var(--mono);font-size:16px;letter-spacing:.14em;text-transform:uppercase;color:#f2ece0;
   border:2px dashed #f2ece0;border-radius:12px;padding:28px 40px;background:rgba(20,17,12,.55)}
 
+/* ---- Etichette, album, azioni multiple (Tranche 3) ---- */
+.chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0 10px}
+.chip{font-family:var(--mono);font-size:11px;letter-spacing:.03em;text-decoration:none;color:var(--accent-ink);
+  background:var(--frame);border:1px solid var(--edge);border-radius:999px;padding:3px 10px}
+.chip:hover{background:var(--paper-2)}
+.chip.on{background:var(--accent-ink);border-color:var(--accent-ink);color:var(--paper)}
+.chip .n{opacity:.6;margin-left:5px}
+.chip-off{font-family:var(--mono);font-size:11px;color:var(--grease)}
+.chips.small{margin:6px 0 0;gap:4px}
+.chips.small .chip{font-size:9.5px;padding:1px 7px}
+.album-desc{font-size:15px;color:var(--ink);max-width:70ch;margin:4px 0 12px;border-left:3px solid var(--grease);padding-left:12px}
+.album-card{display:block;text-decoration:none;color:inherit}
+.album-card .cap{display:flex;flex-direction:column;gap:2px}
+.album-card .desc{font-family:var(--serif);font-size:13px;color:var(--muted);line-height:1.35;margin-top:4px}
+.adminnav{margin:0 0 4px}
+.bulkbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0;padding:8px 10px;
+  border:1px dashed var(--edge);border-radius:8px;background:var(--paper-2);font-family:var(--mono);font-size:12px}
+.bulkbar.on{border-style:solid;border-color:var(--accent);position:sticky;top:0;z-index:5;box-shadow:var(--shadow)}
+.bulk-n{color:var(--muted);min-width:11em}
+.bulkbar.on .bulk-n{color:var(--ink)}
+button.danger,.btn.danger{background:var(--grease);border-color:var(--grease);color:#fff}
+button:disabled{opacity:.45;cursor:not-allowed}
+textarea{font-family:var(--serif);font-size:14px;color:var(--ink);background:var(--frame);border:1px solid var(--edge);
+  border-radius:6px;padding:6px 8px;width:100%;min-width:220px;resize:vertical}
+table.ws img.cover-thumb{width:120px;height:90px;object-fit:cover}
+table.ws td:first-child input[type=checkbox],table.ws th:first-child input[type=checkbox]{width:18px;height:18px}
+
 /* =========================================================================
  * Mobile & tablet (telefono, tablet, o comunque puntatore touch)
  * Regole SOLO additive/di ingrandimento: non tocca nulla fuori da qui,
@@ -259,6 +286,9 @@ select{font-family:var(--mono);font-size:12px;color:var(--ink);background:var(--
   .snip .snip-copy{padding:8px 12px;font-size:11px}
   select{font-size:16px;padding:9px 10px}
   .snip summary{display:inline-block;padding:6px 0}
+  .chip{padding:6px 12px;font-size:12px}
+  .chips.small .chip{padding:4px 9px;font-size:11px}
+  textarea{font-size:16px}
   .cap summary{display:inline-block;padding:6px 0}
   .lb button{padding:10px 15px}
   .lb .nav{width:52px}

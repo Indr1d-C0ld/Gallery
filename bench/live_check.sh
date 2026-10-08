@@ -183,7 +183,7 @@ for p in /gallery/ /gallery/admin/ /gallery/upload.php /gallery/api/upload.php /
          /gallery/regen_thumbs.php /gallery/_fpm_check.php; do
   c="$(code "$p")"; [ "$c" = 401 ] && ok "$p -> 401" || err "$p -> $c (atteso 401)"
 done
-for p in /gallery/secret.php /gallery/config.php /gallery/_migrations.php /gallery/_images.php \
+for p in /gallery/secret.php /gallery/config.php /gallery/_migrations.php /gallery/_images.php /gallery/_archive.php \
          /gallery/schema.sql /gallery/CHANGES.md /gallery/.htaccess /gallery/apply_root_tasks.sh \
          /gallery/bench/run.sh /gallery/bench/tests.php /gallery/uploads/ /gallery/thumbs/; do
   body="$("${CURL[@]}" -w '\n%{http_code}' "https://$HOST$p" 2>/dev/null)"; c="${body##*$'\n'}"

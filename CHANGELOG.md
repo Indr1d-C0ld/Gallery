@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-10-08 (4) — Organizzare senza fatica: album, etichette, azioni multiple, cestino
+
+**Migrazione 4.** Tabelle `albums` (descrizione, copertina, posizione),
+`tags`/`image_tags`, `short_aliases` e colonna `images.deleted_at`. L'album
+resta `images.folder`, quindi link e snippet non cambiano. Le copie create
+con il vecchio "Copia" (righe duplicate sullo stesso file) vengono fuse nella
+più vecchia: l'album della copia diventa un'etichetta, il suo codice un alias
+che continua a servire l'immagine.
+
+**Album.** Rinomina e unione in un'azione, descrizione mostrata in galleria,
+copertina, ordine delle linguette, panoramica con le copertine.
+
+**Etichette.** Molte per immagine, filtro `?tag=`, ricerca `tag:nome`;
+rinomina, unione ed eliminazione dal pannello. Sostituiscono "Copia".
+
+**Azioni su più immagini.** Selezione nel foglio di lavoro: sposta, aggiungi
+o togli un'etichetta, sposta nel cestino.
+
+**Cestino.** Eliminare (anche con il link dell'API) sposta nel cestino per 30
+giorni: indirizzi pubblici a 404, file conservati, ripristino con un clic;
+poi eliminazione definitiva all'apertura del pannello. Ricaricare
+un'immagine cestinata la ripristina con i suoi indirizzi.
+
+**Ricerca unica** in `_archive.php` al posto delle due copie di galleria e
+pannello.
+
 ## 2026-10-08 (3) — Immagini corrette e più leggere: GPS, orientamento, versioni ridotte
 
 **Posizione GPS tolta al caricamento.** Gli originali sono pubblici per

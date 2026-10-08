@@ -198,6 +198,14 @@ function get_int(string $key, int $default = 0, int $min = PHP_INT_MIN, int $max
   return max($min, min($max, $n));
 }
 
+/* Lista di stringhe da un campo POST (es. ids[] delle azioni multiple):
+ * qualunque altra cosa arrivi diventa una lista vuota. */
+function post_list(string $key, int $max = 500): array {
+  $v = $_POST[$key] ?? [];
+  if (!is_array($v)) return [];
+  return array_slice(array_values(array_filter($v, 'is_string')), 0, $max);
+}
+
 /* Limita la pagina richiesta a quelle realmente esistenti e restituisce
  * l'OFFSET da usare. Senza questo, ?p=99999999 produce un OFFSET enorme e
  * SQLite scorre l'intera tabella per restituire zero righe.
@@ -210,11 +218,14 @@ function page_offset(int &$page, int $total, int $per): int {
   return ($page - 1) * $per;
 }
 
-/* --- Cancellazione sicura -------------------------------------------------
- * "Copia" duplica la riga ma NON il file: piu' short-code possono puntare
- * allo stesso filename. Rimuove i file da disco solo quando l'ultima riga
- * che li referenzia e' stata cancellata, altrimenti eliminando una copia si
- * distruggerebbe anche l'originale.
+/* --- Cancellazione definitiva --------------------------------------------
+ * Dal 2026-10 si arriva qui solo dal cestino (vedi _archive.php): eliminare
+ * dal pannello o con il link dell'API sposta nel cestino.
+ * Il conteggio dei riferimenti al file resta come difesa: fino alla
+ * migrazione v4 "Copia" duplicava la riga (stesso filename, altro codice);
+ * ora le copie sono fuse in una riga, ma un DB vecchio non ancora migrato
+ * non deve poter perdere un file ancora in uso.
+ * Etichette e alias della riga se ne vanno da soli (ON DELETE CASCADE).
  */
 function delete_image(string $short): bool {
   $st = db()->prepare("SELECT filename FROM images WHERE short=?");

@@ -87,6 +87,22 @@ function upload_json(string $file, string $mime, array $extra = []): array {
   $r = browser_post_json('/gallery/upload.php', ['csrf' => csrf(), 'img' => new CURLFile($file, $mime, basename($file))] + $extra);
   return [$r, $r['json']];
 }
+/* Campi ids[0], ids[1]... per i POST (curl non accetta array annidati). */
+function ids_fields(array $ids, string $key = 'ids'): array {
+  $out = [];
+  foreach (array_values($ids) as $i => $v) $out["{$key}[$i]"] = $v;
+  return $out;
+}
+/* POST al pannello admin con il token CSRF della sessione del "browser". */
+function admin_post(array $fields, string $view = ''): array {
+  return browser_post('/gallery/admin/index.php' . ($view !== '' ? "?v=$view" : ''), ['csrf' => csrf()] + $fields);
+}
+function trash_count_bench(): int { return (int) q1("SELECT COUNT(*) FROM images WHERE deleted_at IS NOT NULL"); }
+/* Codici delle immagini mostrate in una pagina (dagli snippet). */
+function page_ids(string $path): array {
+  return array_column(snips(req('GET', $path, ['auth' => true])['body']), 'id');
+}
+
 /* Tutti gli attributi data-snip di una pagina, decodificati. */
 function snips(string $html): array {
   preg_match_all('~data-snip="([^"]*)"~', $html, $m);
@@ -325,7 +341,7 @@ group('Upload e pipeline delle miniature', function () use (&$live_shorts, &$fir
     unlink($tp);
     $r = browser_post('/gallery/admin/index.php', ['csrf' => csrf(), 'act' => 'retthumb', 'short' => $long]);
     $gi = @getimagesize($tp);
-    check('admin "Rigenera thumb" (320×1)', $r['code'] === 302 && $gi && [$gi[0], $gi[1]] === [320, 1], "HTTP {$r['code']}");
+    check('admin "Rigenera thumb" (320×1)', $r['code'] === 303 && $gi && [$gi[0], $gi[1]] === [320, 1], "HTTP {$r['code']}");
 
     unlink($tp);
     $out = shell_exec('cd ' . escapeshellarg($WWW) . ' && php -d error_log=' . escapeshellarg($C['log']) . ' regen_thumbs.php 2>&1');
@@ -407,7 +423,9 @@ group('Difese', function () use (&$live_shorts, &$first, &$uploaded, &$n_img, &$
     ['/gallery/?p=99999999', 200], ['/gallery/admin/?q[]=a', 200], ['/gallery/admin/?p=99999999', 200],
     ['/gallery/?q=%22', 200], ['/gallery/?q=folder:%22x', 200], ['/gallery/?q=NEAR(', 200],
     ['/gallery/?q=a*b', 200], ['/gallery/?q=%27%20OR%201=1%20--', 200], ['/gallery/?q=id:', 200],
-    ['/gallery/delete.php?c[]=a&k[]=b', 400], ['/gallery/i.php?c[]=a', 404], ['/gallery/i.php?c=../../secret', 404],
+    ['/gallery/?tag[]=x', 200], ['/gallery/?v=album', 200], ['/gallery/?v[]=1', 200], ['/gallery/?tag=%3Cscript%3E', 200],
+  ['/gallery/admin/?v=cestino&q[]=a', 200], ['/gallery/admin/?v=boh', 200], ['/gallery/admin/?v=album', 200], ['/gallery/admin/?v=etichette', 200],
+  ['/gallery/delete.php?c[]=a&k[]=b', 400], ['/gallery/i.php?c[]=a', 404], ['/gallery/i.php?c=../../secret', 404],
   ];
   $off = log_size();
   foreach ($hostile as [$p, $exp]) {
@@ -458,20 +476,24 @@ group('Doppioni, risposta JSON, snippet', function () use (&$live_shorts, &$firs
   [$r, $j3] = upload_json("$TMP/vera", $real['mime'], ['folder' => 'Altro album']);
   check("immagine gia' in archivio ({$real['short']}): restituito il suo link", ($j3['duplicate'] ?? null) === true && ($j3['id'] ?? '') === $real['short'], json_encode($j3));
 
-  // d) fra piu' righe sullo stesso file vince quella dello stesso album
-  browser_post('/gallery/admin/index.php', ['csrf' => csrf(), 'act' => 'copy', 'short' => $id, 'dest_folder' => 'Copie2']);
-  $copy = (string) q1("SELECT short FROM images WHERE sha256=? AND folder='Copie2'", [hash_file('sha256', $f)]);
-  check('"Copia" in admin conserva l\'impronta', $copy !== '' && row($copy)['sha256'] === row($id)['sha256']);
-  [$r, $j4] = upload_json($f, 'image/png', ['folder' => 'Copie2']);
-  check('  doppione caricato nell\'album della copia -> link della copia', ($j4['id'] ?? '') === $copy, json_encode($j4));
-  [$r, $j5] = upload_json($f, 'image/png', ['folder' => 'Ancora un altro']);
-  check('  doppione in un altro album -> la riga piu\' vecchia', ($j5['id'] ?? '') === $id, json_encode($j5));
+  // d) un doppione di un'immagine nel cestino la ripristina, con il suo link di prima
+  admin_post(['act' => 'delete', 'short' => $id]);
+  check('immagine nel cestino: /i/ risponde 404', req('GET', "/gallery/i/$id")['code'] === 404 && row($id)['deleted_at'] !== null);
+  [$r, $j4] = upload_json($f, 'image/png', ['folder' => 'Banco']);
+  check('  ricaricarla la ripristina: stesso link, restored=true', ($j4['id'] ?? '') === $id && ($j4['restored'] ?? null) === true
+    && row($id)['deleted_at'] === null && req('GET', "/gallery/i/$id")['code'] === 200, json_encode($j4));
+  admin_post(['act' => 'delete', 'short' => $id]);
+  [$r] = upload($f, 'image/png');
+  check('  anche dal form classico: ?ok=ID&dup=1&restored=1 e la pagina lo dice', str_contains($r['h']['location'] ?? '', "ok=$id&dup=1&restored=1")
+    && str_contains(req('GET', "/gallery/?ok=$id&dup=1&restored=1", ['auth' => true])['body'], 'Era nel cestino'));
+  [$r, $j5] = upload_json($f, 'image/png');
+  check('  ora e\' visibile: doppione normale, restored=false', ($j5['duplicate'] ?? null) === true && ($j5['restored'] ?? null) === false);
 
   // e) API: anche li' il doppione, con il link di cancellazione
   $r = req('POST', '/gallery/api/upload.php', ['auth' => true, 'headers' => ['X-Api-Token: ' . $C['token']],
     'post' => ['file' => new CURLFile($f, 'image/png', 'x.png')]]);
   $ja = json_decode($r['body'], true);
-  check('API: doppione riconosciuto, con link di cancellazione', ($ja['duplicate'] ?? null) === true && in_array($ja['id'] ?? '', [$id, $copy], true) && isset($ja['delete']));
+  check('API: doppione riconosciuto, con link di cancellazione', ($ja['duplicate'] ?? null) === true && ($ja['id'] ?? '') === $id && isset($ja['delete']));
 
   // f) errori in JSON per il caricatore
   [$r, $je] = upload_json("$TMP/bomb.png", 'image/png');
@@ -633,15 +655,15 @@ group('Posizione GPS, orientamento, versioni ridotte, cache', function () use (&
   $s2 = $snipOf($big);
   check('  dopo "Rigenera thumb" l\'indirizzo della miniatura cambia', $s1 && $s2 && $s1['thumb'] !== $s2['thumb'], ($s1['thumb'] ?? '') . ' / ' . ($s2['thumb'] ?? ''));
 
-  // j) eliminare: le versioni ridotte se ne vanno con l'ultima riga del file
+  // j) cestino: i file restano finche' non si elimina per sempre, poi spariscono tutti
   $gfn = row($gid)['filename'];
-  browser_post('/gallery/admin/index.php', ['csrf' => csrf(), 'act' => 'copy', 'short' => $gid, 'dest_folder' => 'Copie3']);
-  $gcopy = (string) q1("SELECT short FROM images WHERE filename=? AND short<>?", [$gfn, $gid]);
-  browser_post('/gallery/admin/index.php', ['csrf' => csrf(), 'act' => 'delete', 'short' => $gcopy]);
-  check('eliminata una copia: la versione ridotta resta', is_file("$WWW/thumbs/$gfn.w640.webp"));
   req('GET', "/gallery/delete.php?c=$gid&k=" . row($gid)['delkey'], ['auth' => true]);
-  check('  eliminato l\'ultimo: originale, miniatura e versioni ridotte spariscono',
-    !is_file("$WWW/uploads/$gfn") && !is_file("$WWW/thumbs/$gfn") && !glob("$WWW/thumbs/$gfn.w*"));
+  check('link di cancellazione dell\'API: nel cestino, /i/ /t/ ?w= rispondono 404, i file restano',
+    req('GET', "/gallery/i/$gid")['code'] === 404 && req('GET', "/gallery/t/$gid")['code'] === 404 && req('GET', "/gallery/i/$gid?w=640")['code'] === 404
+    && is_file("$WWW/uploads/$gfn") && is_file("$WWW/thumbs/$gfn") && is_file("$WWW/thumbs/$gfn.w640.webp"));
+  admin_post(['act' => 'purge', 'short' => $gid], 'cestino');
+  check('  eliminata per sempre: riga, originale, miniatura e versioni ridotte spariscono',
+    row($gid) === null && !is_file("$WWW/uploads/$gfn") && !is_file("$WWW/thumbs/$gfn") && !glob("$WWW/thumbs/$gfn.w*"));
 
   // k) tante richieste insieme di versioni non ancora fatte: lock, nessun errore
   $cand = db_bench()->query("SELECT short FROM images WHERE width > 480 AND mime <> 'image/gif' ORDER BY id LIMIT 12")->fetchAll(PDO::FETCH_COLUMN);
@@ -678,26 +700,115 @@ group('Posizione GPS, orientamento, versioni ridotte, cache', function () use (&
 });
 
 /* ======================================================================= */
-group('Copia, sposta, modifica, elimina', function () use (&$live_shorts, &$first, &$uploaded, &$n_img, &$copy_migrated, $C, $WWW, $TMP, $EXPECT) {
+group('Album, etichette, azioni multiple, cestino', function () use (&$live_shorts, &$first, &$uploaded, &$n_img, &$copy_migrated, $C, $WWW, $TMP, $EXPECT) {
+  $tagsOf = fn(string $sh) => db_bench()->query("SELECT t.name FROM image_tags it JOIN tags t ON t.id=it.tag_id JOIN images i ON i.id=it.image_id
+                                                WHERE i.short=" . db_bench()->quote($sh) . " ORDER BY t.name COLLATE NOCASE")->fetchAll(PDO::FETCH_COLUMN);
+  $ids = [];
+  foreach ([1, 2, 3, 4] as $k) {
+    [, $j] = upload_json(make_img("alb$k", 300 + $k, 200, 'png'), 'image/png', ['folder' => 'Uno', 'title' => "album prova $k"]);
+    $ids[] = $j['id'] ?? '';
+  }
+  check('preparazione: 4 immagini nell\'album Uno', count(array_filter($ids)) === 4);
+
+  // --- azioni multiple
+  $r = admin_post(['act' => 'bulk', 'op' => 'tag', 'value' => 'Panorami'] + ids_fields([$ids[0], $ids[1], $ids[2], 'nonesiste']));
+  check('multiple: etichetta aggiunta a 3 immagini (codice inesistente ignorato)', $r['code'] === 303
+    && $tagsOf($ids[0]) === ['Panorami'] && $tagsOf($ids[2]) === ['Panorami'] && $tagsOf($ids[3]) === []);
+  $g = page_ids('/gallery/?tag=Panorami');
+  check('  galleria ?tag=: esattamente quelle 3', count($g) === 3 && !array_diff([$ids[0], $ids[1], $ids[2]], $g));
+  check('  ricerca tag:panorami (maiuscole indifferenti): le stesse 3', count(page_ids('/gallery/?q=tag:panorami')) === 3);
+  $home = req('GET', '/gallery/?f=Uno', ['auth' => true])['body'];
+  check('  etichetta visibile tra i filtri e sulle schede', str_contains($home, 'class="chip') && substr_count($home, '>Panorami</a>') >= 3);
+  admin_post(['act' => 'bulk', 'op' => 'untag', 'value' => 'panorami'] + ids_fields([$ids[0]]));
+  check('multiple: etichetta tolta da una', $tagsOf($ids[0]) === [] && $tagsOf($ids[1]) === ['Panorami']);
+  admin_post(['act' => 'bulk', 'op' => 'move', 'value' => 'Due'] + ids_fields([$ids[0], $ids[1]]));
+  check('multiple: due spostate nell\'album Due', row($ids[0])['folder'] === 'Due' && row($ids[1])['folder'] === 'Due' && row($ids[2])['folder'] === 'Uno');
+  $r = browser_post('/gallery/admin/index.php', ['act' => 'bulk', 'op' => 'trash'] + ids_fields([$ids[3]]));
+  check('multiple senza token CSRF: 419, nulla cambia', $r['code'] === 419 && row($ids[3])['deleted_at'] === null);
+  admin_post(['act' => 'bulk', 'op' => 'trash', 'ids' => $ids[3]]);
+  check('multiple con ids non in forma di lista: ignorato', row($ids[3])['deleted_at'] === null);
+
+  // --- etichette dal foglio di lavoro
+  admin_post(['act' => 'meta', 'short' => $ids[3], 'folder' => 'Uno', 'title' => 'x', 'alt' => '', 'tags' => 'città, <b>x</b>, Città ,mare']);
+  check('etichette dal modulo: normalizzate, accenti tenuti, doppioni e HTML via', $tagsOf($ids[3]) === ['bxb', 'città', 'mare'], json_encode($tagsOf($ids[3])));
+  admin_post(['act' => 'meta', 'short' => $ids[3], 'folder' => 'Uno', 'title' => 'x', 'alt' => '', 'tags' => '']);
+  check('  togliendole tutte, le etichette rimaste senza immagini spariscono', !q1("SELECT 1 FROM tags WHERE name='bxb'") && !q1("SELECT 1 FROM tags WHERE name='città'"));
+  admin_post(['act' => 'tag_rename', 'from' => 'Panorami', 'to' => 'paesaggi'], 'etichette');
+  check('etichetta rinominata', $tagsOf($ids[1]) === ['paesaggi']);
+  admin_post(['act' => 'bulk', 'op' => 'tag', 'value' => 'vedute'] + ids_fields([$ids[2], $ids[3]]));
+  admin_post(['act' => 'tag_rename', 'from' => 'paesaggi', 'to' => 'Vedute'], 'etichette');
+  check('  rinominata con un nome esistente: unite', $tagsOf($ids[1]) === ['vedute'] && $tagsOf($ids[2]) === ['vedute'] && !q1("SELECT 1 FROM tags WHERE name='paesaggi'"));
+  admin_post(['act' => 'tag_rename', 'from' => 'vedute', 'to' => ''], 'etichette');
+  check('  nome vuoto: eliminata, le immagini restano', $tagsOf($ids[2]) === [] && row($ids[2]) !== null);
+
+  // --- album: descrizione, copertina, ordine, rinomina, unione
+  admin_post(['act' => 'album_meta', 'name' => 'Uno', 'description' => "Foto di prova <script>alert(1)</script>\nseconda riga", 'cover' => $ids[3], 'position' => '1'], 'album');
+  $al = db_bench()->query("SELECT * FROM albums WHERE name='Uno'")->fetch();
+  check('album: descrizione, copertina e posizione salvate', $al && $al['cover'] === $ids[3] && (int) $al['position'] === 1);
+  $page = req('GET', '/gallery/?f=Uno', ['auth' => true])['body'];
+  check('  descrizione mostrata nell\'album, con escape', str_contains($page, 'Foto di prova &lt;script&gt;') && !str_contains($page, '<script>alert(1)'));
+  $home = req('GET', '/gallery/', ['auth' => true])['body'];
+  check('  linguette nell\'ordine scelto: Uno prima di Blog', strpos($home, '?f=Uno&') !== false && strpos($home, '?f=Uno&') < strpos($home, '?f=Blog&'));
+  $ov = req('GET', '/gallery/?v=album', ['auth' => true])['body'];
+  check('  panoramica: copertina scelta', str_contains($ov, 'i.php?c=' . $ids[3] . '&amp;thumb=1'));
+  admin_post(['act' => 'album_meta', 'name' => 'Uno', 'description' => 'd', 'cover' => $ids[0], 'position' => 'abc'], 'album');
+  $al = db_bench()->query("SELECT * FROM albums WHERE name='Uno'")->fetch();
+  check('  copertina di un altro album e posizione non numerica: rifiutate', $al['cover'] === null && $al['position'] === null);
+  admin_post(['act' => 'album_meta', 'name' => 'Uno', 'description' => 'Album uno', 'cover' => '', 'position' => '1'], 'album');
+  admin_post(['act' => 'album_rename', 'from' => 'Uno', 'to' => 'Uno bis'], 'album');
+  check('rinomina: immagini e descrizione passano al nuovo nome', row($ids[2])['folder'] === 'Uno bis'
+    && (string) q1("SELECT description FROM albums WHERE name='Uno bis'") === 'Album uno' && !q1("SELECT 1 FROM albums WHERE name='Uno'"));
+  admin_post(['act' => 'album_rename', 'from' => 'Due', 'to' => 'Uno bis'], 'album');
+  check('rinomina verso un album esistente: uniti', row($ids[0])['folder'] === 'Uno bis' && row($ids[1])['folder'] === 'Uno bis'
+    && !in_array('Due', array_column(db_bench()->query("SELECT DISTINCT folder FROM images")->fetchAll(), 'folder'), true));
+  check('  la descrizione del destinatario resta', (string) q1("SELECT description FROM albums WHERE name='Uno bis'") === 'Album uno');
+  check('  il pannello lo dice: «Due» unito a «Uno bis»', str_contains(browser_get('/gallery/admin/?v=album')['body'], 'Album «Due» unito a «Uno bis»'));
+  admin_post(['act' => 'album_rename', 'from' => 'Uno bis', 'to' => ''], 'album');
+  check('nome vuoto: immagini senza album, scheda dell\'album tolta', row($ids[0])['folder'] === '' && !q1("SELECT 1 FROM albums WHERE name='Uno bis'"));
+
+  // --- cestino
+  $nAll = (int) preg_match('~tutti<span class="n">(\d+)~', req('GET', '/gallery/', ['auth' => true])['body'], $m) ? (int) $m[1] : -1;
+  admin_post(['act' => 'bulk', 'op' => 'trash'] + ids_fields([$ids[0], $ids[1]]));
+  $home = req('GET', '/gallery/', ['auth' => true])['body'];
+  check('cestino: le immagini spariscono da galleria, conteggi e ricerca',
+    preg_match('~tutti<span class="n">(\d+)~', $home, $m) && (int) $m[1] === $nAll - 2
+    && !array_intersect([$ids[0], $ids[1]], page_ids('/gallery/?f=')) && !array_intersect([$ids[0], $ids[1]], page_ids('/gallery/?q=' . rawurlencode('album prova'))));
+  check('  e i loro indirizzi pubblici rispondono 404', req('GET', "/gallery/i/{$ids[0]}")['code'] === 404 && req('GET', "/gallery/t/{$ids[1]}")['code'] === 404);
+  db_bench()->prepare("UPDATE images SET deleted_at=? WHERE short=?")->execute([time() - 31 * 86400, $ids[0]]);
+  $fn0 = row($ids[0])['filename'];
+  $adm = req('GET', '/gallery/admin/', ['auth' => true, 'session' => true])['body'];
+  check('dopo 30 giorni l\'apertura del pannello la elimina per sempre', row($ids[0]) === null && !is_file("$WWW/uploads/$fn0") && str_contains($adm, 'oltre 30 giorni'));
+  check('  quella entrata ieri resta', row($ids[1])['deleted_at'] !== null);
+  admin_post(['act' => 'purge_all'], 'cestino');
+  check('"Svuota il cestino": eliminate tutte', trash_count_bench() === 0 && row($ids[1]) === null);
+});
+
+/* ======================================================================= */
+group('Modifica, cestino, eliminazione definitiva', function () use (&$live_shorts, &$first, &$uploaded, &$n_img, &$copy_migrated, $C, $WWW, $TMP, $EXPECT) {
   $orig = array_key_first($uploaded);
   $fn = row($orig)['filename'];
-  $r = browser_post('/gallery/admin/index.php', ['csrf' => csrf(), 'act' => 'copy', 'short' => $orig, 'dest_folder' => 'Copie']);
-  $copy = q1("SELECT short FROM images WHERE filename=? AND short<>?", [$fn, $orig]);
-  check('copia: nuova riga sullo stesso file', $r['code'] === 302 && $copy && row($copy)['folder'] === 'Copie');
-  $r = browser_post('/gallery/admin/index.php', ['csrf' => csrf(), 'act' => 'delete', 'short' => (string)$copy]);
-  check('eliminare la copia lascia l\'originale servito e il file su disco',
-    row((string)$copy) === null && req('GET', "/gallery/i/$orig")['code'] === 200 && is_file("$WWW/uploads/$fn"));
-  $r = browser_post('/gallery/admin/index.php', ['csrf' => csrf(), 'act' => 'move', 'short' => $orig, 'dest_folder' => 'Spostate']);
-  check('sposta in altro album', row($orig)['folder'] === 'Spostate');
-  $r = browser_post('/gallery/admin/index.php', ['csrf' => csrf(), 'act' => 'meta', 'short' => $orig, 'folder' => 'Spostate', 'title' => 'gabbiano solitario', 'alt' => 'x']);
+  $r = admin_post(['act' => 'meta', 'short' => $orig, 'folder' => 'Spostate', 'title' => 'gabbiano solitario', 'alt' => 'x', 'tags' => 'mare, Gabbiani,mare']);
+  check('modifica: album, titolo ed etichette salvati', $r['code'] === 303 && row($orig)['folder'] === 'Spostate'
+    && db_bench()->query("SELECT group_concat(t.name, ',') FROM image_tags it JOIN tags t ON t.id=it.tag_id JOIN images i ON i.id=it.image_id
+                          WHERE i.short='$orig' ORDER BY t.name")->fetchColumn() !== false);
   $r = req('GET', '/gallery/?q=gabbiano', ['auth' => true]);
   check('titolo modificato e ritrovato dalla ricerca FTS', row($orig)['title'] === 'gabbiano solitario' && str_contains($r['body'], 'gabbiano solitario'));
   $key = row($orig)['delkey'];
   $r = req('GET', "/gallery/delete.php?c=$orig&k=" . str_repeat('0', 16), ['auth' => true]);
   check('delete.php con chiave errata -> 403', $r['code'] === 403);
   $r = req('GET', "/gallery/delete.php?c=$orig&k=$key", ['auth' => true]);
-  check('delete.php con chiave giusta: riga, file e miniatura spariscono',
-    $r['code'] === 200 && row($orig) === null && !is_file("$WWW/uploads/$fn") && !is_file("$WWW/thumbs/$fn"));
+  check('delete.php con chiave giusta: nel cestino (riga e file restano, /i/ 404)',
+    $r['code'] === 200 && row($orig)['deleted_at'] !== null && is_file("$WWW/uploads/$fn") && req('GET', "/gallery/i/$orig")['code'] === 404);
+  $trash = req('GET', '/gallery/admin/index.php?v=cestino', ['auth' => true])['body'];
+  check('  il cestino la elenca, con i giorni rimasti e la miniatura', str_contains($trash, ">$orig<") && str_contains($trash, 'ancora 30 giorni') && str_contains($trash, 'src="data:image/'));
+  admin_post(['act' => 'restore', 'short' => $orig], 'cestino');
+  check('  ripristinata: di nuovo pubblica', row($orig)['deleted_at'] === null && req('GET', "/gallery/i/$orig")['code'] === 200);
+  admin_post(['act' => 'purge', 'short' => $orig]);
+  check('  "elimina per sempre" non tocca un\'immagine visibile', row($orig) !== null && is_file("$WWW/uploads/$fn"));
+  admin_post(['act' => 'delete', 'short' => $orig]);
+  admin_post(['act' => 'purge', 'short' => $orig], 'cestino');
+  check('  dal cestino, eliminata per sempre: riga, file e miniatura spariscono',
+    row($orig) === null && !is_file("$WWW/uploads/$fn") && !is_file("$WWW/thumbs/$fn"));
 });
 
 /* ======================================================================= */
@@ -710,7 +821,7 @@ group('Permessi (simulati sul banco)', function () use (&$live_shorts, &$first, 
   [$r, $s] = upload($f, 'image/jpeg', ['folder' => 'Banco']);
   check('codice in sola lettura: upload funziona', $r['code'] === 303 && $s && is_file("$WWW/thumbs/" . row($s)['filename']), "HTTP {$r['code']}");
   $r = browser_post('/gallery/admin/index.php', ['csrf' => csrf(), 'act' => 'meta', 'short' => (string)$s, 'folder' => 'Banco', 'title' => 'ro', 'alt' => '']);
-  check('codice in sola lettura: modifica da admin funziona', $r['code'] === 302 && row((string)$s)['title'] === 'ro');
+  check('codice in sola lettura: modifica da admin funziona', $r['code'] === 303 && row((string)$s)['title'] === 'ro');
   check('codice in sola lettura: /i/ e /t/ funzionano', req('GET', "/gallery/i/$s")['code'] === 200 && req('GET', "/gallery/t/$s")['code'] === 200);
   shell_exec('chmod -R u+w ' . escapeshellarg($WWW));
 
@@ -759,6 +870,39 @@ group('Migrazioni su database diversi', function () use (&$live_shorts, &$first,
   check('DB vecchio: la ricerca trova le righe preesistenti', $r['code'] === 200 && str_contains($r['body'], 'tramonto rosso'));
   check('DB vecchio: schema_version completa', versions($old) === $EXPECT);
 
+  // d) DB con copie (prima della v4): una riga sola, album delle copie -> etichette,
+  //    codici delle copie -> alias che continuano a funzionare
+  $cp = $C['bench'] . '/db/copie.db';
+  $o = db_bench($cp);
+  $o->exec("CREATE TABLE images (id INTEGER PRIMARY KEY, short TEXT UNIQUE NOT NULL, filename TEXT NOT NULL,
+    mime TEXT NOT NULL, size INTEGER NOT NULL, width INTEGER, height INTEGER, title TEXT, alt TEXT,
+    delkey TEXT NOT NULL, created_at INTEGER NOT NULL, folder TEXT DEFAULT '')");
+  copy("$WWW/uploads/" . row($first)['filename'], "$WWW/uploads/copiaA.jpg");
+  copy("$WWW/uploads/" . row($first)['filename'], "$WWW/uploads/unico.jpg");
+  $ins = $o->prepare("INSERT INTO images(short,filename,mime,size,width,height,title,alt,delkey,created_at,folder) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
+  foreach ([['copiaAAA1', 'copiaA.jpg', 'Blog', 1000], ['copiaBBB2', 'copiaA.jpg', 'Forum', 2000],
+            ['copiaCCC3', 'copiaA.jpg', 'Blog', 3000], ['unicoDDD4', 'unico.jpg', '', 4000]] as [$sh, $fn, $fo, $t]) {
+    $ins->execute([$sh, $fn, row($first)['mime'], 1, 10, 10, "t $sh", null, 'k', $t, $fo]);
+  }
+  $o = null;
+  use_db($cp);
+  $r = req('GET', '/gallery/', ['auth' => true]);
+  check('DB con copie: migrato, pagina 200', $r['code'] === 200 && versions($cp) === $EXPECT);
+  $left = db_bench($cp)->query("SELECT short FROM images ORDER BY id")->fetchAll(PDO::FETCH_COLUMN);
+  check('  copie fuse: resta una riga per file (la piu\' vecchia)', $left === ['copiaAAA1', 'unicoDDD4'], json_encode($left));
+  check('  i codici delle copie sono alias dell\'originale',
+    db_bench($cp)->query("SELECT group_concat(short) FROM (SELECT short FROM short_aliases ORDER BY short)")->fetchColumn() === 'copiaBBB2,copiaCCC3');
+  check('  l\'album diverso della copia e\' diventato un\'etichetta',
+    db_bench($cp)->query("SELECT group_concat(t.name) FROM image_tags it JOIN tags t ON t.id=it.tag_id")->fetchColumn() === 'Forum');
+  $a = req('GET', '/gallery/i/copiaAAA1'); $b = req('GET', '/gallery/i/copiaBBB2');
+  check('  /i/ con il codice di una copia: stessa immagine; /t/ anche', $b['code'] === 200 && $b['body'] === $a['body'] && req('GET', '/gallery/t/copiaCCC3')['code'] === 200);
+  admin_post(['act' => 'delete', 'short' => 'copiaAAA1']);
+  check('  originale nel cestino: anche gli alias rispondono 404', req('GET', '/gallery/i/copiaBBB2')['code'] === 404);
+  admin_post(['act' => 'purge', 'short' => 'copiaAAA1'], 'cestino');
+  check('  eliminata per sempre: alias ed etichette se ne vanno con lei',
+    !db_bench($cp)->query("SELECT COUNT(*) FROM short_aliases")->fetchColumn() && !db_bench($cp)->query("SELECT COUNT(*) FROM image_tags")->fetchColumn()
+    && !is_file("$WWW/uploads/copiaA.jpg") && is_file("$WWW/uploads/unico.jpg"));
+
   // c) richieste concorrenti sul primo avvio: una sola migrazione, nessun errore.
   //    Cinque DB nuovi, 16 richieste insieme ciascuno (le gare sono casuali).
   $bad = []; $multi = [];
@@ -791,7 +935,7 @@ group('Log degli errori PHP', function () use (&$live_shorts, &$first, &$uploade
   preg_match_all('~^.*PHP (Warning|Notice|Deprecated|Fatal error|Parse error).*$~m', $log, $m);
   check('nessun warning, notice o errore fatale', !$m[0], implode(' | ', array_slice($m[0], 0, 3)));
   $migr = substr_count($log, 'schema portato alla versione');
-  $want = 7 + ($copy_migrated ? 1 : 0);   // DB nuovo + DB vecchio + 5 concorrenti (+ la copia, se era indietro)
+  $want = 8 + ($copy_migrated ? 1 : 0);   // DB nuovo, vecchio, con copie + 5 concorrenti (+ la copia, se era indietro)
   info("migrazioni registrate nel log: $migr (attese $want)");
   check('una sola migrazione per database', $migr === $want, "trovate $migr");
 });

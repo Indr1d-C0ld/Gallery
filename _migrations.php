@@ -83,6 +83,68 @@ function gallery_migrations(): array {
       }
     }],
 
+    /* v4 — album veri, etichette, cestino (Tranche 3).
+     * - albums: descrizione, copertina, ordine; la chiave e' il nome, cioe'
+     *   lo stesso valore di images.folder (che resta com'e': nessuna query
+     *   esistente cambia). Le righe nascono alla prima modifica.
+     * - tags + image_tags: etichette, molte per immagine.
+     * - images.deleted_at: cestino (NULL = visibile).
+     * - short_aliases: codici che portano a un'altra immagine.
+     * "Copia" duplicava la riga per mettere la stessa immagine in un altro
+     * album. Qui ogni gruppo di copie diventa UNA riga (la piu' vecchia):
+     * gli album delle altre diventano etichette, e i loro codici, magari gia'
+     * incollati in qualche post, restano validi come alias. */
+    4 => ['album, etichette, cestino; copie fuse in una riga con alias', function (PDO $pdo): void {
+      $pdo->exec("CREATE TABLE IF NOT EXISTS albums (
+        name        TEXT PRIMARY KEY,
+        description TEXT NOT NULL DEFAULT '',
+        cover       TEXT,
+        position    INTEGER,
+        created_at  INTEGER NOT NULL
+      )");
+      $pdo->exec("CREATE TABLE IF NOT EXISTS tags (
+        id   INTEGER PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE
+      )");
+      $pdo->exec("CREATE TABLE IF NOT EXISTS image_tags (
+        image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+        tag_id   INTEGER NOT NULL REFERENCES tags(id)   ON DELETE CASCADE,
+        PRIMARY KEY (image_id, tag_id)
+      )");
+      $pdo->exec("CREATE INDEX IF NOT EXISTS idx_image_tags_tag ON image_tags(tag_id)");
+      $pdo->exec("CREATE TABLE IF NOT EXISTS short_aliases (
+        short      TEXT PRIMARY KEY,
+        image_id   INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL
+      )");
+      $cols = array_column($pdo->query("PRAGMA table_info(images)")->fetchAll(PDO::FETCH_ASSOC), 'name');
+      if (!in_array('deleted_at', $cols, true)) $pdo->exec("ALTER TABLE images ADD COLUMN deleted_at INTEGER");
+      $pdo->exec("CREATE INDEX IF NOT EXISTS idx_images_deleted ON images(deleted_at)");
+
+      // copie -> una riga + etichette + alias
+      $alias = $pdo->prepare("INSERT OR IGNORE INTO short_aliases(short, image_id, created_at) VALUES(?,?,?)");
+      $tagId = $pdo->prepare("SELECT id FROM tags WHERE name = ? COLLATE NOCASE");
+      $tagNew = $pdo->prepare("INSERT INTO tags(name) VALUES(?)");
+      $link = $pdo->prepare("INSERT OR IGNORE INTO image_tags(image_id, tag_id) VALUES(?,?)");
+      $drop = $pdo->prepare("DELETE FROM images WHERE id=?");
+      $group = $pdo->prepare("SELECT id, short, COALESCE(folder,'') AS folder FROM images WHERE filename=? ORDER BY id");
+      foreach ($pdo->query("SELECT filename FROM images GROUP BY filename HAVING COUNT(*) > 1")->fetchAll(PDO::FETCH_COLUMN) as $fn) {
+        $group->execute([$fn]);
+        $rows = $group->fetchAll(PDO::FETCH_ASSOC);
+        $keep = array_shift($rows);
+        foreach ($rows as $r) {
+          $alias->execute([$r['short'], $keep['id'], time()]);
+          if ($r['folder'] !== '' && strcasecmp($r['folder'], $keep['folder']) !== 0) {
+            $tagId->execute([$r['folder']]);
+            $tid = $tagId->fetchColumn();
+            if ($tid === false) { $tagNew->execute([$r['folder']]); $tid = $pdo->lastInsertId(); }
+            $link->execute([$keep['id'], $tid]);
+          }
+          $drop->execute([$r['id']]);
+        }
+      }
+    }],
+
   ];
 }
 

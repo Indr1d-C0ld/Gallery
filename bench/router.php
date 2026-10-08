@@ -36,7 +36,7 @@ function bench_route() {
   // File e cartelle che Apache nega
   if (preg_match('#^/gallery/(bench(/|$)|_orig_backup_|(.*/)?\.)#', $path)) return 404;
   if (preg_match('#\.(db|db-wal|db-shm|sqlite|sql|md|log|bak|sh)$#', $path)) return 403;
-  if (preg_match('#/(secret|_theme|_images|_migrations|config)\.php$#', $path)) return 403;
+  if (preg_match('#/(secret|_theme|_images|_migrations|_archive|config)\.php$#', $path)) return 403;
   if (preg_match('#^/gallery/(uploads|thumbs)/.*\.(php|phtml|phar)$#', $path)) return 403;
 
   // Riscritture

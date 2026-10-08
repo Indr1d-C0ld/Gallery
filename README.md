@@ -13,13 +13,17 @@ raggiungibili (hotlink) per poterle incollare su forum/siti esterni.
 
 | Percorso | Ruolo |
 |---|---|
-| `index.php` | galleria: griglia "contact sheet", album, ricerca, lightbox, upload |
-| `admin/index.php` | gestione: modifica metadati, sposta/copia tra album, rigenera thumbnail, elimina |
-| `upload.php` / `api/upload.php` | upload da form (sessione + CSRF) e via API (token) |
-| `i.php` | consegna immagine/thumbnail per short-code, con ETag/Cache-Control |
-| `delete.php` | elimina via chiave di cancellazione (capability, non richiede login) |
-| `_theme.php` | tema condiviso: CSS a token (chiaro/scuro), lightbox, copia-negli-appunti |
-| `migrate.php` | migrazione idempotente: schema, colonna `folder`, indici, FTS5 |
+| `index.php` | galleria: griglia "contact sheet", album (con panoramica e copertine), etichette, ricerca, lightbox, caricamento (più file, incolla, trascina) |
+| `admin/index.php` | pannello: foglio di lavoro con azioni su più immagini, album (descrizione, copertina, ordine, rinomina/unisci), etichette, cestino |
+| `upload.php` / `api/upload.php` | upload da form (sessione + CSRF) e via API (token); posizione GPS tolta, doppioni riconosciuti |
+| `i.php` | consegna immagine, miniatura (`/t/`) e versioni ridotte (`?w=`), con ETag/Cache-Control |
+| `delete.php` | sposta nel cestino via chiave di cancellazione (capability, non richiede login) |
+| `_images.php` | pipeline unica delle immagini: miniature, versioni ridotte, orientamento EXIF, rimozione GPS, snippet |
+| `_archive.php` | album, etichette, cestino, ricerca (FTS5 o LIKE) |
+| `_migrations.php` | migrazioni dello schema, applicate dall'app alla prima richiesta |
+| `_theme.php` | tema condiviso: CSS a token (chiaro/scuro), lightbox, formati degli snippet |
+| `migrate.php` | stato delle migrazioni (`--status`) e applicazione da riga di comando |
+| `bench/` | banco di prova isolato (`run.sh`, `--serve` per il browser) e controllo dell'installazione (`live_check.sh`) |
 | `apply_root_tasks.sh` | installa la conf Apache, genera l'API token, lancia `migrate.php`, verifica |
 
 ## Sicurezza

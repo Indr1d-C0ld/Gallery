@@ -17,8 +17,8 @@ Options -Indexes -MultiViews
 <FilesMatch "\.(db|db-wal|db-shm|sqlite|sql|md|log|bak|sh)$">
   Require all denied
 </FilesMatch>
-<FilesMatch "^(secret|_theme|_images|_migrations|config)\.php$">
-  # config.php, _theme.php, _images.php e _migrations.php sono include:
+<FilesMatch "^(secret|_theme|_images|_migrations|_archive|config)\.php$">
+  # config.php, _theme.php, _images.php, _migrations.php e _archive.php sono include:
   # nessun output utile se aperti, secret.php contiene i segreti.
   # Meglio negarli comunque.
   Require all denied

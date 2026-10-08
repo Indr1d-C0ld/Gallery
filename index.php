@@ -2,41 +2,10 @@
 require_once __DIR__ . "/config.php";
 require_once __DIR__ . "/_theme.php";
 require_once __DIR__ . "/_images.php";
+require_once __DIR__ . "/_archive.php";
 
 require_login();          // difesa in profondità (Apache autentica già)
 csrf_token();             // avvia sessione + token PRIMA di qualsiasi output
-
-function fts5_available(): bool {
-  try {
-    $r = db()->query("SELECT name FROM sqlite_master WHERE type='table' AND name='images_fts'")->fetch();
-    return (bool)$r;
-  } catch (Throwable $e) {
-    return false;
-  }
-}
-
-function build_fts_query(string $q): string {
-  $q = preg_replace('~\s+~', ' ', trim($q));
-  $q = substr($q, 0, 120);
-
-  $parts = [];
-  foreach (explode(' ', $q) as $tok) {
-    if ($tok === '') continue;
-    if (preg_match('~^(folder|title|alt|file|id):(.+)$~i', $tok, $m)) {
-      $k = strtolower($m[1]);
-      $v = str_replace('"', '""', trim(trim($m[2]), "\"'"));
-      // short e' UNINDEXED nell'indice FTS: cercarci non trova mai nulla.
-      // Il codice e' anche nel nome del file (CODICE.ext), che e' indicizzato.
-      if     ($k === 'id')   $parts[] = 'filename:"' . $v . '"';
-      elseif ($k === 'file') $parts[] = 'filename:"' . $v . '"';
-      else                   $parts[] = $k . ':"' . $v . '"';
-    } else {
-      $tok = str_replace('"', '""', trim($tok, "\"'"));
-      $parts[] = '"' . $tok . '"';
-    }
-  }
-  return $parts ? implode(' AND ', $parts) : '';
-}
 
 function human_size(?int $b): string {
   if (!$b) return '';
@@ -49,89 +18,50 @@ function human_size(?int $b): string {
  * f assente        -> scope "all"  (mostra tutto l'archivio)
  * f="" (esplicito) -> scope "folder" con folder vuoto (senza album)
  * f="Nome"         -> scope "folder" con quell'album
+ * tag=Nome         -> solo le immagini con quell'etichetta
+ * v=album          -> panoramica degli album (copertine)
  */
 $scope  = isset($_GET['f']) ? 'folder' : 'all';
-$folder = substr(preg_replace('~[^a-zA-Z0-9 _-]~', '', trim(get_str('f'))), 0, 64);
+$folder = norm_folder(get_str('f'));
+$tag    = norm_tag(get_str('tag'));
+$view   = get_str('v') === 'album' ? 'album' : '';
 $q      = substr(preg_replace('~\s+~', ' ', trim(get_str('q'))), 0, 80);
 $ok     = substr(preg_replace('~[^A-Za-z0-9_-]~', '', trim(get_str('ok'))), 0, 16);
-
 $per    = 48;
-$page   = get_int('p', 1, 1, 100000);   // il tetto reale si applica dopo il conteggio
+
+$albums = album_list();
+$tags   = tag_list();
+$albumNames = array_values(array_filter(array_column($albums, 'name'), fn($n) => $n !== ''));
+$albumMeta  = ($scope === 'folder' && $folder !== '') ? album_meta($folder) : null;
+
+$rows = []; $total = 0; $page = 1; $pages = 1; $useFts = false;
+if ($view === '') {
+  $res = gallery_search([
+    'q' => $q, 'tag' => $tag, 'per' => $per, 'page' => get_int('p', 1, 1, 100000),
+    'folder' => $scope === 'folder' ? $folder : null,
+  ]);
+  ['rows' => $rows, 'total' => $total, 'page' => $page, 'pages' => $pages, 'fts' => $useFts] = $res;
+}
 $offset = ($page - 1) * $per;
 
-/* ---- Cartelle ---- */
-$folders = db()->query("
-  SELECT COALESCE(folder,'') AS folder, COUNT(*) AS c
-  FROM images
-  GROUP BY COALESCE(folder,'')
-  ORDER BY (COALESCE(folder,'')='') DESC, folder ASC
-")->fetchAll();
-
-/* ---- Query risultati + conteggio ---- */
-$useFts = ($q !== '' && fts5_available());
-
-if ($useFts) {
-  $fts  = build_fts_query($q);
-  // NB: usare il nome reale della tabella FTS (l'alias non è ammesso con MATCH)
-  $from = "FROM images_fts JOIN images i ON i.id = images_fts.rowid WHERE images_fts MATCH ?";
-  $args = [$fts];
-  if ($scope === 'folder') {
-    if ($folder === '') { $from .= " AND COALESCE(i.folder,'')=''"; }
-    else                { $from .= " AND i.folder=?"; $args[] = $folder; }
-  }
-
-  $cnt = db()->prepare("SELECT COUNT(*) $from");
-  $cnt->execute($args);
-  $total  = (int)$cnt->fetchColumn();
-  $offset = page_offset($page, $total, $per);
-
-  $st = db()->prepare("
-    SELECT i.short,i.filename,i.mime,i.title,i.alt,i.width,i.height,i.size,i.created_at,COALESCE(i.folder,'') AS folder
-    $from ORDER BY bm25(images_fts), i.created_at DESC LIMIT $per OFFSET $offset
-  ");
-  $st->execute($args);
-  $rows = $st->fetchAll();
-} else {
-  $where = []; $args = [];
-  if ($scope === 'folder') {
-    if ($folder === '') { $where[] = "COALESCE(folder,'')=''"; }
-    else                { $where[] = "folder=?"; $args[] = $folder; }
-  }
-  if ($q !== '') {
-    $where[] = "(short LIKE ? OR title LIKE ? OR alt LIKE ? OR filename LIKE ? OR COALESCE(folder,'') LIKE ?)";
-    $like = "%$q%"; array_push($args, $like, $like, $like, $like, $like);
-  }
-  $w = $where ? (" WHERE " . implode(" AND ", $where)) : "";
-
-  $cnt = db()->prepare("SELECT COUNT(*) FROM images$w");
-  $cnt->execute($args);
-  $total  = (int)$cnt->fetchColumn();
-  $offset = page_offset($page, $total, $per);
-
-  $st = db()->prepare("
-    SELECT short,filename,mime,title,alt,width,height,size,created_at,COALESCE(folder,'') AS folder
-    FROM images$w ORDER BY created_at DESC LIMIT $per OFFSET $offset
-  ");
-  $st->execute($args);
-  $rows = $st->fetchAll();
-}
-
-$pages = max(1, (int)ceil($total / $per));
-$qs = function (array $ov = []) use ($scope, $folder, $q, $page) {
-  $base = ['q' => $q, 'p' => $page];
+$qs = function (array $ov = []) use ($scope, $folder, $q, $page, $tag) {
+  $base = ['q' => $q, 'tag' => $tag, 'p' => $page];
   if ($scope === 'folder') $base = ['f' => $folder] + $base;
-  return '?' . http_build_query(array_merge($base, $ov));
+  return '?' . http_build_query(array_filter(array_merge($base, $ov), fn($v) => $v !== '' && $v !== null && $v !== 1));
 };
 
 // theme_head() applica gia' l'escape: qui si passa testo grezzo (vedi #13)
-theme_head('Gallery', $total . ' fotogrammi' . ($scope === 'all' ? ' in archivio' : ' · ' . ($folder === '' ? 'senza album' : $folder)));
+theme_head('Gallery', $view === 'album'
+  ? count($albumNames) . ' album'
+  : $total . ' fotogrammi' . ($scope === 'all' ? ' in archivio' : ' · ' . ($folder === '' ? 'senza album' : $folder)) . ($tag !== '' ? ' · ' . $tag : ''));
 ?>
 
 <?php if ($ok !== ''):
   $st = db()->prepare("SELECT * FROM images WHERE short=?");
   $st->execute([$ok]);
   $okRow = $st->fetch() ?: null; ?>
-  <div class="flash"><?= get_str('dup') === '1' ? 'Già in archivio: ecco il link esistente' : 'Upload OK' ?>
+  <div class="flash"><?= get_str('restored') === '1' ? 'Era nel cestino: ripristinata, con il link di prima'
+                        : (get_str('dup') === '1' ? 'Già in archivio: ecco il link esistente' : 'Upload OK') ?>
     &nbsp;·&nbsp; ID <code><?= htmlspecialchars($ok) ?></code>
     &nbsp;·&nbsp; <a href="<?= htmlspecialchars($BASE_URL . '/i/' . $ok) ?>" target="_blank" rel="noopener">apri</a>
     <?php if ($okRow): ?><?= snippet_box($okRow, 'altri formati') ?><?php endif; ?></div>
@@ -139,14 +69,14 @@ theme_head('Gallery', $total . ' fotogrammi' . ($scope === 'all' ? ' in archivio
 
 <div class="bar">
   <div class="tabs">
-    <a class="tab <?= $scope === 'all' ? 'on' : '' ?>" href="?q=<?= urlencode($q) ?>">tutti<span class="n"><?= array_sum(array_column($folders, 'c')) ?></span></a>
-    <?php foreach ($folders as $fo): $name = $fo['folder'];
-      $isRoot = ($name === '');
-      $on = ($scope === 'folder' && $folder === $name);
-      $lbl = $isRoot ? 'senza album' : htmlspecialchars($name); ?>
+    <a class="tab <?= $scope === 'all' && $view === '' ? 'on' : '' ?>" href="?q=<?= urlencode($q) ?>">tutti<span class="n"><?= array_sum(array_column($albums, 'n')) ?></span></a>
+    <?php foreach ($albums as $al): $name = $al['name'];
+      $on = ($view === '' && $scope === 'folder' && $folder === $name);
+      $lbl = $name === '' ? 'senza album' : htmlspecialchars($name); ?>
       <a class="tab <?= $on ? 'on' : '' ?>" href="?f=<?= urlencode($name) ?>&q=<?= urlencode($q) ?>">
-        <?= $lbl ?><span class="n"><?= $fo['c'] ?></span></a>
+        <?= $lbl ?><span class="n"><?= (int) $al['n'] ?></span></a>
     <?php endforeach; ?>
+    <a class="tab <?= $view === 'album' ? 'on' : '' ?>" href="?v=album" title="Panoramica degli album">▦ album</a>
   </div>
 
   <form class="search" method="get">
@@ -160,7 +90,20 @@ theme_head('Gallery', $total . ' fotogrammi' . ($scope === 'all' ? ' in archivio
   <?= theme_toggle() ?>
 </div>
 
-<?php if ($q !== ''): ?>
+<?php if ($tags && $view === ''): ?>
+<div class="chips" aria-label="Etichette">
+  <?php foreach ($tags as $t): $on = strcasecmp($t['name'], $tag) === 0; ?>
+    <a class="chip <?= $on ? 'on' : '' ?>" href="<?= htmlspecialchars($on ? $qs(['tag' => null, 'p' => null]) : $qs(['tag' => $t['name'], 'p' => null])) ?>"><?= htmlspecialchars($t['name']) ?><span class="n"><?= (int) $t['n'] ?></span></a>
+  <?php endforeach; ?>
+  <?php if ($tag !== ''): ?><a class="chip-off" href="<?= htmlspecialchars($qs(['tag' => null, 'p' => null])) ?>">× togli l'etichetta</a><?php endif; ?>
+</div>
+<?php endif; ?>
+
+<?php if ($albumMeta && $albumMeta['description'] !== '' && $view === ''): ?>
+  <p class="album-desc"><?= nl2br(htmlspecialchars($albumMeta['description'])) ?></p>
+<?php endif; ?>
+
+<?php if ($q !== '' && $view === ''): ?>
   <div class="note">Ricerca: <code><?= htmlspecialchars($q) ?></code><?= $useFts ? ' · FTS5' : ' · LIKE' ?></div>
 <?php endif; ?>
 
@@ -171,7 +114,7 @@ theme_head('Gallery', $total . ' fotogrammi' . ($scope === 'all' ? ' in archivio
         data-uploader data-max="<?= (int)$MAX_BYTES ?>">
     <?= csrf_field() ?>
     <input type="file" name="img" accept="image/jpeg,image/png,image/gif,image/webp" multiple required>
-    <input type="text" name="folder" placeholder="album (opz.)" value="<?= htmlspecialchars($folder) ?>">
+    <input type="text" name="folder" placeholder="album (opz.)" value="<?= htmlspecialchars($folder) ?>" list="albums">
     <input type="text" name="title" placeholder="titolo (opz.)">
     <input type="text" name="alt" placeholder="alt (opz.)">
     <button type="submit" data-up-submit>Carica</button>
@@ -184,11 +127,28 @@ theme_head('Gallery', $total . ' fotogrammi' . ($scope === 'all' ? ' in archivio
   <ol class="tray" data-tray hidden></ol>
 </div>
 <div class="dropzone" data-dropzone hidden><span>Rilascia per caricare</span></div>
+<datalist id="albums"><?php foreach ($albumNames as $a): ?><option value="<?= htmlspecialchars($a) ?>"><?php endforeach; ?></datalist>
 <?php endif; ?>
 
 <hr class="rule">
 
-<?php if (!$rows): ?>
+<?php if ($view === 'album'): ?>
+<div class="sheet albums">
+<?php foreach ($albums as $al): if ($al['name'] === '') continue;
+  $cov = album_cover($al['name'], $al['cover']);
+  $href = '?f=' . rawurlencode($al['name']); ?>
+  <a class="frame album-card" href="<?= htmlspecialchars($href) ?>">
+    <?php if ($cov): ?><img class="shot" loading="lazy" decoding="async" alt=""
+      src="<?= htmlspecialchars($BASE_URL . '/i.php?c=' . $cov['short'] . '&thumb=1&v=' . thumb_version($cov['filename'])) ?>"><?php endif; ?>
+    <span class="cap">
+      <span class="ttl"><?= htmlspecialchars($al['name']) ?></span>
+      <span class="dim"><?= (int) $al['n'] ?> immagini</span>
+      <?php if ($al['description'] !== ''): ?><span class="desc"><?= htmlspecialchars(mb_strimwidth($al['description'], 0, 140, '…')) ?></span><?php endif; ?>
+    </span>
+  </a>
+<?php endforeach; ?>
+</div>
+<?php elseif (!$rows): ?>
   <p class="note">Nessun fotogramma per questa selezione.</p>
 <?php else: ?>
 <div class="sheet">
@@ -217,6 +177,7 @@ foreach ($rows as $r):
       <div class="row1"><span><?= sprintf('%03d', $n) ?></span><span><?= date('Y-m-d', $r['created_at']) ?></span></div>
       <div class="ttl"><?= htmlspecialchars($label) ?: '&nbsp;' ?></div>
       <div class="dim"><?= htmlspecialchars($r['folder'] ?: 'root') ?><?= $meta ? ' · ' . htmlspecialchars($meta) : '' ?></div>
+      <?php if ($r['tags']): ?><div class="chips small"><?php foreach ($r['tags'] as $tg): ?><a class="chip" href="?tag=<?= urlencode($tg) ?>"><?= htmlspecialchars($tg) ?></a><?php endforeach; ?></div><?php endif; ?>
       <?= snippet_box($r, '· altri formati ·') ?>
     </figcaption>
   </figure>
@@ -332,7 +293,9 @@ document.addEventListener('DOMContentLoaded', function () {
     job.li.className = 'up-item ' + (d.duplicate ? 'dup' : 'ok');
     job.fill.style.width = '100%';
     job.img.src = d.thumb;
-    job.msg.textContent = d.duplicate
+    job.msg.textContent = d.restored
+      ? 'era nel cestino: ripristinata' + (d.folder ? ' (album ' + d.folder + ')' : '') + ', con il link di prima'
+      : d.duplicate
       ? 'già in archivio' + (d.folder ? ' (album ' + d.folder + ')' : '') + ': link esistente, nessun doppione'
       : 'caricata · ' + d.width + '×' + d.height;
     if (d.location_removed) job.msg.textContent += ' · posizione GPS rimossa';
@@ -415,5 +378,5 @@ theme_foot([
   'pages' => $pages,
   'prev'  => $page > 1      ? $qs(['p' => $page - 1]) : null,
   'next'  => $page < $pages ? $qs(['p' => $page + 1]) : null,
-  'label' => $total . ' fotogrammi',
+  'label' => $view === 'album' ? count($albumNames) . ' album' : $total . ' fotogrammi',
 ], 'Archivio privato');

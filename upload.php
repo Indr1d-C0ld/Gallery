@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/config.php";
 require_once __DIR__ . "/_images.php";
+require_once __DIR__ . "/_archive.php";     // norm_folder()
 
 /* Chiamata via API con token (api/upload.php): salta login di sessione e CSRF,
    il token è già stato verificato. Altrimenti: richiede auth Apache + CSRF. */
@@ -25,11 +26,12 @@ function upload_fail(int $code, string $msg): void {
   exit;
 }
 
-/* Esito positivo: immagine appena salvata oppure doppione gia' in archivio. */
-function upload_done(array $row, bool $duplicate, bool $location_removed = false): void {
+/* Esito positivo: immagine appena salvata oppure doppione gia' in archivio
+ * (eventualmente ripescato dal cestino). */
+function upload_done(array $row, bool $duplicate, bool $location_removed = false, bool $restored = false): void {
   global $JSON, $BASE_URL;
   if ($JSON) {
-    $out = ['ok' => true, 'duplicate' => $duplicate, 'location_removed' => $location_removed] + snippet_data($row);
+    $out = ['ok' => true, 'duplicate' => $duplicate, 'restored' => $restored, 'location_removed' => $location_removed] + snippet_data($row);
     if (defined('GALLERY_API_CALL')) {
       $out['delete'] = $BASE_URL . '/delete.php?c=' . $row['short'] . '&k=' . $row['delkey'];
     }
@@ -37,15 +39,9 @@ function upload_done(array $row, bool $duplicate, bool $location_removed = false
     echo json_encode($out, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     exit;
   }
-  $target = $BASE_URL . "/?ok=" . rawurlencode($row['short']) . ($duplicate ? '&dup=1' : '');
+  $target = $BASE_URL . "/?ok=" . rawurlencode($row['short']) . ($duplicate ? '&dup=1' : '') . ($restored ? '&restored=1' : '');
   header("Location: " . $target, true, 303);
   exit;
-}
-
-function norm_folder($s) {
-  $s = trim($s ?? '');
-  $s = preg_replace('~[^a-zA-Z0-9 _-]~', '', $s);
-  return substr($s, 0, 64);
 }
 
 if (empty($_FILES['img'])) {
@@ -135,14 +131,16 @@ $folder = norm_folder(post_str('folder'));
  * (L'impronta si calcola DOPO aver tolto la posizione: e' quella del file
  * davvero salvato, e lo stesso scatto ricaricato da' lo stesso risultato.)
  * Allora si restituisce quella invece di salvarne un secondo file: lo stesso
- * screenshot incollato due volte da' lo stesso link. Fra piu' righe con lo
- * stesso file (nate da "Copia") si preferisce quella nello stesso album,
- * poi la piu' vecchia. Se il DB non risponde si prosegue: l'inserimento
- * del punto 9 fallira' comunque in modo pulito. */
+ * screenshot incollato due volte da' lo stesso link. Se l'immagine e' nel
+ * cestino viene ripristinata, con i suoi indirizzi di prima. Fra piu' righe
+ * con lo stesso file (solo in un DB precedente alla v4) si preferisce una
+ * visibile, poi quella nello stesso album, poi la piu' vecchia. Se il DB
+ * non risponde si prosegue: l'inserimento del punto 9 fallira' comunque in
+ * modo pulito. */
 $sha = hash_file('sha256', $f['tmp_name']);
 $existing = null;
 try {
-  $q = db()->prepare("SELECT * FROM images WHERE sha256=? ORDER BY (COALESCE(folder,'')=?) DESC, id ASC");
+  $q = db()->prepare("SELECT * FROM images WHERE sha256=? ORDER BY (deleted_at IS NULL) DESC, (COALESCE(folder,'')=?) DESC, id ASC");
   $q->execute([$sha, $folder]);
   foreach ($q->fetchAll() as $r) {
     if (is_file(upload_path($r['filename']))) { $existing = $r; break; }
@@ -151,7 +149,11 @@ try {
   error_log('gallery upload: ricerca doppioni non riuscita — ' . $e->getMessage());
 }
 if ($existing) {
-  upload_done($existing, true, $loc > 0);
+  $restored = $existing['deleted_at'] !== null;
+  if ($restored) {
+    db()->prepare("UPDATE images SET deleted_at=NULL WHERE id=?")->execute([$existing['id']]);
+  }
+  upload_done($existing, true, $loc > 0, $restored);
 }
 
 /* 5) Genera identificativi */
