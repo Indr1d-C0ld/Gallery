@@ -28,7 +28,9 @@ function build_fts_query(string $q): string {
     if (preg_match('~^(folder|title|alt|file|id):(.+)$~i', $tok, $m)) {
       $k = strtolower($m[1]);
       $v = str_replace('"', '""', trim(trim($m[2]), "\"'"));
-      if     ($k === 'id')   $parts[] = 'short:"' . $v . '"';
+      // short e' UNINDEXED nell'indice FTS: cercarci non trova mai nulla.
+      // Il codice e' anche nel nome del file (CODICE.ext), che e' indicizzato.
+      if     ($k === 'id')   $parts[] = 'filename:"' . $v . '"';
       elseif ($k === 'file') $parts[] = 'filename:"' . $v . '"';
       else                   $parts[] = $k . ':"' . $v . '"';
     } else {
@@ -64,14 +66,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ->execute([norm_folder(post_str('dest_folder')), $short]);
 
   } elseif ($act === 'copy') {
-    $q = db()->prepare("SELECT filename,mime,size,width,height,title,alt FROM images WHERE short=?");
+    $q = db()->prepare("SELECT filename,mime,size,width,height,title,alt,sha256 FROM images WHERE short=?");
     $q->execute([$short]);
     if ($r = $q->fetch()) {
-      db()->prepare("INSERT INTO images(short,filename,mime,size,width,height,title,alt,delkey,created_at,folder)
-                     VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+      // stesso file, quindi stessa impronta: il riconoscimento doppioni la ritrova
+      db()->prepare("INSERT INTO images(short,filename,mime,size,width,height,title,alt,delkey,created_at,folder,sha256)
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
           ->execute([shortcode(7), $r['filename'], $r['mime'], $r['size'], $r['width'], $r['height'],
                      $r['title'], $r['alt'], bin2hex(random_bytes(8)), time(),
-                     norm_folder(post_str('dest_folder'))]);
+                     norm_folder(post_str('dest_folder')), $r['sha256']]);
     }
   }
 
@@ -130,6 +133,7 @@ theme_head('Gallery · Admin', $total . ' record · utente ' . (current_user() ?
     <?php if ($q !== ''): ?><a class="btn ghost" href="index.php">Reset</a><?php endif; ?>
     <a class="btn ghost" href="<?= htmlspecialchars($B) ?>/">↗ galleria</a>
   </form>
+  <label class="fmt">formato <select data-snip-format aria-label="Formato degli snippet"></select></label>
   <?= theme_toggle() ?>
 </div>
 
@@ -153,8 +157,6 @@ echo implode('  ·  ', $out);
   $tfile = $THUMBS . "/" . $r['filename'];
   $v = is_file($tfile) ? (int)@filemtime($tfile) : 0;
   $tb = $thumb . "&v=" . $v;
-  $md = "[![" . ($r['alt'] ?: $r['short']) . "]({$thumb})]({$full})";
-  $bb = "[url={$full}][img]{$thumb}[/img][/url]";
   $dim = ($r['width'] && $r['height']) ? "{$r['width']}×{$r['height']}" : "?";
 ?>
 <tr>
@@ -176,14 +178,7 @@ echo implode('  ·  ', $out);
     </form>
   </td>
 
-  <td>
-    <div class="mini">
-      <button type="button" data-copy="<?= htmlspecialchars($full, ENT_QUOTES) ?>">copia URL</button>
-      <button type="button" data-copy="<?= htmlspecialchars($thumb, ENT_QUOTES) ?>">copia thumb</button>
-      <button type="button" data-copy="<?= htmlspecialchars($md, ENT_QUOTES) ?>">copia MD</button>
-      <button type="button" data-copy="<?= htmlspecialchars($bb, ENT_QUOTES) ?>">copia BBCode</button>
-    </div>
-  </td>
+  <td><?= snippet_box($r, 'altri formati') ?></td>
 
   <td>
     <div class="act-grid">

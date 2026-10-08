@@ -9,6 +9,39 @@ if (!defined('GALLERY_API_CALL')) {
   csrf_check();
 }
 
+/* Risposta in JSON per l'API e per il caricatore della pagina (che chiede
+ * "Accept: application/json"); per il form classico testo e redirect. */
+$JSON = defined('GALLERY_API_CALL') || str_contains((string) ($_SERVER['HTTP_ACCEPT'] ?? ''), 'application/json');
+
+function upload_fail(int $code, string $msg): void {
+  global $JSON;
+  http_response_code($code);
+  if ($JSON) {
+    header('Content-Type: application/json');
+    echo json_encode(['ok' => false, 'error' => $msg], JSON_UNESCAPED_UNICODE);
+  } else {
+    echo $msg;
+  }
+  exit;
+}
+
+/* Esito positivo: immagine appena salvata oppure doppione gia' in archivio. */
+function upload_done(array $row, bool $duplicate): void {
+  global $JSON, $BASE_URL;
+  if ($JSON) {
+    $out = ['ok' => true, 'duplicate' => $duplicate] + snippet_data($row);
+    if (defined('GALLERY_API_CALL')) {
+      $out['delete'] = $BASE_URL . '/delete.php?c=' . $row['short'] . '&k=' . $row['delkey'];
+    }
+    header('Content-Type: application/json');
+    echo json_encode($out, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+  }
+  $target = $BASE_URL . "/?ok=" . rawurlencode($row['short']) . ($duplicate ? '&dup=1' : '');
+  header("Location: " . $target, true, 303);
+  exit;
+}
+
 function norm_folder($s) {
   $s = trim($s ?? '');
   $s = preg_replace('~[^a-zA-Z0-9 _-]~', '', $s);
@@ -16,8 +49,7 @@ function norm_folder($s) {
 }
 
 if (empty($_FILES['img'])) {
-  http_response_code(400);
-  exit("no file");
+  upload_fail(400, "no file");
 }
 
 $f = $_FILES['img'];
@@ -35,18 +67,15 @@ if (!isset($f['error']) || $f['error'] !== UPLOAD_ERR_OK) {
   ];
   $code = $f['error'] ?? -1;
   $msg  = $map[$code] ?? 'UNKNOWN';
-  http_response_code(400);
-  exit("upload error: $code ($msg)");
+  upload_fail(400, "upload error: $code ($msg)");
 }
 
 /* 2) Size */
 if (!isset($f['size']) || $f['size'] <= 0) {
-  http_response_code(400);
-  exit("empty upload");
+  upload_fail(400, "empty upload");
 }
 if ($f['size'] > $MAX_BYTES) {
-  http_response_code(400);
-  exit("too large (max ".(int)$MAX_BYTES." bytes)");
+  upload_fail(400, "too large (max " . (int)$MAX_BYTES . " bytes)");
 }
 
 /* 3) MIME */
@@ -55,8 +84,7 @@ $mime = finfo_file($fi, $f['tmp_name']);
 finfo_close($fi);
 
 if (!isset($ALLOWED[$mime])) {
-  http_response_code(415);
-  exit("unsupported mime: " . $mime);
+  upload_fail(415, "unsupported mime: " . $mime);
 }
 $ext = $ALLOWED[$mime];
 
@@ -68,12 +96,10 @@ $ext = $ALLOWED[$mime];
  */
 $gi = @getimagesize($f['tmp_name']);
 if (!is_array($gi) || ($gi[0] ?? 0) < 1 || ($gi[1] ?? 0) < 1) {
-  http_response_code(415);
-  exit("immagine non leggibile o corrotta");
+  upload_fail(415, "immagine non leggibile o corrotta");
 }
 if ($gi[0] * $gi[1] > $MAX_PIXELS) {
-  http_response_code(413);
-  exit(sprintf(
+  upload_fail(413, sprintf(
     "immagine troppo grande: %d×%d = %.1f megapixel (max %.0f)",
     $gi[0], $gi[1], ($gi[0] * $gi[1]) / 1e6, $MAX_PIXELS / 1e6
   ));
@@ -81,6 +107,27 @@ if ($gi[0] * $gi[1] > $MAX_PIXELS) {
 
 /* 4) Folder (cartella logica in DB) */
 $folder = norm_folder(post_str('folder'));
+
+/* 4b) Doppioni: la stessa immagine, byte per byte, e' gia' in archivio?
+ * Allora si restituisce quella invece di salvarne un secondo file: lo stesso
+ * screenshot incollato due volte da' lo stesso link. Fra piu' righe con lo
+ * stesso file (nate da "Copia") si preferisce quella nello stesso album,
+ * poi la piu' vecchia. Se il DB non risponde si prosegue: l'inserimento
+ * del punto 9 fallira' comunque in modo pulito. */
+$sha = hash_file('sha256', $f['tmp_name']);
+$existing = null;
+try {
+  $q = db()->prepare("SELECT * FROM images WHERE sha256=? ORDER BY (COALESCE(folder,'')=?) DESC, id ASC");
+  $q->execute([$sha, $folder]);
+  foreach ($q->fetchAll() as $r) {
+    if (is_file(upload_path($r['filename']))) { $existing = $r; break; }
+  }
+} catch (Throwable $e) {
+  error_log('gallery upload: ricerca doppioni non riuscita — ' . $e->getMessage());
+}
+if ($existing) {
+  upload_done($existing, true);
+}
 
 /* 5) Genera identificativi */
 $short  = shortcode(7);
@@ -94,8 +141,7 @@ if (!is_dir($UPLOADS)) {
   @mkdir($UPLOADS, 0775, true);
 }
 if (!move_uploaded_file($f['tmp_name'], $dest)) {
-  http_response_code(500);
-  exit("store failed");
+  upload_fail(500, "store failed");
 }
 
 /* 7) Dati immagine (gia' misurate al punto 3b) */
@@ -112,44 +158,30 @@ if ($USE_THUMBS) {
  * bloccato, collisione di short-code) senza questo blocco resterebbe un file
  * orfano — invisibile dall'interfaccia ma che occupa spazio per sempre.
  */
+$row = [
+  'short'      => $short,
+  'filename'   => $fname,
+  'mime'       => $mime,
+  'size'       => (int)filesize($dest),
+  'width'      => $w,
+  'height'     => $h,
+  'title'      => post_str('title') ?: null,
+  'alt'        => post_str('alt')   ?: null,
+  'delkey'     => $delkey,
+  'created_at' => time(),
+  'folder'     => $folder,
+  'sha256'     => $sha,
+];
 try {
-  $stmt = db()->prepare("
-    INSERT INTO images(short, filename, mime, size, width, height, title, alt, delkey, created_at, folder)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?)
-  ");
-  $stmt->execute([
-    $short,
-    $fname,
-    $mime,
-    (int)filesize($dest),
-    $w, $h,
-    post_str('title') ?: null,
-    post_str('alt')   ?: null,
-    $delkey,
-    time(),
-    $folder
-  ]);
+  db()->prepare("INSERT INTO images(" . implode(',', array_keys($row)) . ")
+                 VALUES(" . implode(',', array_fill(0, count($row), '?')) . ")")
+      ->execute(array_values($row));
 } catch (Throwable $e) {
   @unlink($dest);                 // niente riga, niente file
   @unlink(thumb_path($fname));    // e nemmeno la miniatura
   error_log('gallery upload: insert fallito per ' . $fname . ' — ' . $e->getMessage());
-  http_response_code(500);
-  exit("salvataggio non riuscito");
+  upload_fail(500, "salvataggio non riuscito");
 }
 
 /* 10) Risposta */
-if (defined('GALLERY_API_CALL')) {
-  header('Content-Type: application/json');
-  echo json_encode([
-    'ok'    => true,
-    'id'    => $short,
-    'url'   => $BASE_URL . '/i/' . $short,
-    'thumb' => $BASE_URL . '/i.php?c=' . $short . '&thumb=1',
-    'delete'=> $BASE_URL . '/delete.php?c=' . $short . '&k=' . $delkey,
-  ], JSON_UNESCAPED_SLASHES);
-  exit;
-}
-$target = $BASE_URL . "/?ok=" . rawurlencode($short);
-header("Location: " . $target, true, 303);
-exit;
-
+upload_done($row, false);

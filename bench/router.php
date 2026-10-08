@@ -24,6 +24,8 @@ function bench_route() {
   $public = (bool) preg_match('#^/gallery/(i\.php$|i/[A-Za-z0-9_-]+$|t/[A-Za-z0-9_-]+$)#', $path);
   $authed = ($_SERVER['PHP_AUTH_USER'] ?? null) === $cfg['user']
          && hash_equals($cfg['pass'], (string) ($_SERVER['PHP_AUTH_PW'] ?? ''));
+  // run.sh --serve: banco da provare a mano nel browser, gia' "autenticato"
+  if (!empty($cfg['autologin'])) { $authed = true; $_SERVER['PHP_AUTH_USER'] = $cfg['user']; }
   if (!$authed) unset($_SERVER['PHP_AUTH_USER'], $_SERVER['PHP_AUTH_PW']);
   if (!$public && !$authed) {
     header('WWW-Authenticate: Basic realm="Gallery - Accesso riservato"');

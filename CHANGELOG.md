@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-10-08 (2) — Pubblicare in pochi secondi: incolla, trascina, snippet, doppioni
+
+**Caricamento.** Il riquadro di caricamento accetta più file insieme, uno
+screenshot incollato (Ctrl+V in qualunque punto della pagina) e le immagini
+trascinate nella finestra. Un file alla volta, con barra di avanzamento; alla
+fine i link di tutto il gruppo vanno negli appunti, uno per riga, nel formato
+scelto. File non supportati o troppo grandi vengono scartati prima dell'invio.
+Senza JavaScript resta il form classico. `upload.php` risponde in JSON (anche
+per gli errori) quando la richiesta porta `Accept: application/json`.
+
+**Snippet.** Nove formati definiti in un solo punto (JavaScript del tema):
+URL, Markdown link/immagine/miniatura, BBCode e BBCode con miniatura, HTML con
+`width`/`height`, Hugo `figure`, URL della miniatura. L'ultimo formato usato
+resta salvato nel browser e vale in galleria, nel pannello e nel caricatore.
+Copia con la Clipboard API e, se il browser la nega, con il metodo classico.
+
+**Doppioni.** Migrazione 3: colonna `sha256` con l'impronta di ogni originale
+(calcolata anche per le immagini già presenti). Caricando un'immagine identica
+a una in archivio si riceve il link esistente, senza un secondo file; fra più
+righe sullo stesso file vince quella dello stesso album. Anche l'API lo
+segnala, con `"duplicate": true`.
+
+**Ricerca `id:`.** Non trovava mai nulla: interrogava una colonna che l'indice
+FTS non indicizza. Ora cerca nel nome del file, che contiene il codice.
+
+**Banco.** Prove nuove per tutto quanto sopra; `bench/run.sh --serve` lascia
+il banco acceso, già autenticato, per provare l'interfaccia nel browser.
+
 ## 2026-10-08 — Fondamenta: banco di prova, migrazioni automatiche, pipeline unica
 
 **Banco di prova (`bench/`).** `bash bench/run.sh` copia per intero

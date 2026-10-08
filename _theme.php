@@ -200,6 +200,47 @@ table.ws code{background:var(--paper-2);padding:1px 4px;border-radius:3px;word-b
 .lb .nav.prev{left:16px;right:auto}
 .lb .nav.next{right:16px;left:auto}
 .lb.single .nav{display:none}
+/* ---- Snippet (formati definiti nel JavaScript in fondo) ---- */
+[hidden]{display:none!important}
+select{font-family:var(--mono);font-size:12px;color:var(--ink);background:var(--frame);
+  border:1px solid var(--edge);border-radius:6px;padding:6px 8px}
+.fmt{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
+  display:inline-flex;gap:6px;align-items:center}
+.snip{margin-top:6px}
+.snip .snip-copy{font-size:10px;padding:4px 8px;letter-spacing:.05em}
+.snip details{margin-top:5px}
+.snip summary{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--accent-ink);cursor:pointer;list-style:none}
+.snip summary::-webkit-details-marker{display:none}
+.snip .copies{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+.snip .copies button{font-size:9.5px;padding:4px 7px;letter-spacing:.06em}
+.flash .snip{margin-top:8px}
+
+/* ---- Caricamento: vassoio, avanzamento, zona di rilascio ---- */
+.up-status{font-family:var(--mono);font-size:12px;margin:10px 0 0}
+.up-status .up-done{color:var(--ink);background:var(--ok-bg);border:1px solid var(--ok-line);border-radius:5px;padding:3px 7px}
+.up-status .up-warn{color:var(--grease)}
+.tray{list-style:none;margin:10px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}
+.up-item{display:flex;gap:10px;align-items:flex-start;background:var(--frame);border:1px solid var(--edge);
+  border-radius:8px;padding:8px}
+.up-thumb{width:64px;height:64px;object-fit:cover;background:var(--well);border:1px solid var(--frame-line);flex:none}
+.up-thumb:not([src]){visibility:hidden}
+.up-body{flex:1;min-width:0;font-family:var(--mono);font-size:12px}
+.up-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.up-bar{height:6px;background:var(--paper-2);border:1px solid var(--edge);border-radius:3px;overflow:hidden;margin:6px 0 4px}
+.up-bar i{display:block;height:100%;width:0;background:var(--accent)}
+@media (prefers-reduced-motion:no-preference){.up-bar i{transition:width .15s ease}}
+.up-msg{color:var(--muted)}
+.up-item.ok .up-bar i{background:var(--ok-line)}
+.up-item.dup .up-bar i{background:var(--muted)}
+.up-item.err{border-color:var(--grease)}
+.up-item.err .up-bar i{background:var(--grease)}
+.up-item.err .up-msg{color:var(--grease)}
+.dropzone{position:fixed;inset:0;z-index:98;display:flex;align-items:center;justify-content:center;
+  background:rgba(28,24,18,.6);pointer-events:none}
+.dropzone span{font-family:var(--mono);font-size:16px;letter-spacing:.14em;text-transform:uppercase;color:#f2ece0;
+  border:2px dashed #f2ece0;border-radius:12px;padding:28px 40px;background:rgba(20,17,12,.55)}
+
 /* =========================================================================
  * Mobile & tablet (telefono, tablet, o comunque puntatore touch)
  * Regole SOLO additive/di ingrandimento: non tocca nulla fuori da qui,
@@ -214,7 +255,10 @@ table.ws code{background:var(--paper-2);padding:1px 4px;border-radius:3px;word-b
   button,.btn{padding:10px 15px;font-size:13px}
   .tab{padding:8px 14px;font-size:13px}
   .theme-toggle{padding:10px 13px}
-  .cap .copies button{padding:8px 11px;font-size:11px}
+  .cap .copies button,.snip .copies button{padding:8px 11px;font-size:11px}
+  .snip .snip-copy{padding:8px 12px;font-size:11px}
+  select{font-size:16px;padding:9px 10px}
+  .snip summary{display:inline-block;padding:6px 0}
   .cap summary{display:inline-block;padding:6px 0}
   .lb button{padding:10px 15px}
   .lb .nav{width:52px}
@@ -312,6 +356,94 @@ function theme_foot(?array $pager = null, string $footRight = 'Archivio privato'
     root.setAttribute('data-theme',next);
     try{ localStorage.setItem('gallery-theme',next); }catch(err){}
   });
+
+  /* ---- snippet: i formati sono definiti SOLO qui ----
+   * Ogni immagine porta i suoi dati in data-snip (JSON preparato da
+   * snippet_data() in _images.php); da li' nascono URL, Markdown, BBCode,
+   * HTML, Hugo. L'ultimo formato usato resta salvato nel browser. */
+  var esc = {
+    html: function(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); },
+    md:   function(s){ return String(s).replace(/([\\\[\]])/g,'\\$1'); },
+    q:    function(s){ return String(s).replace(/"/g,"'"); }
+  };
+  function alt(s){ return s.alt || s.title || ''; }
+  function wh(s){ return s.width ? ' width="'+s.width+'" height="'+s.height+'"' : ''; }
+  var FORMATS = [
+    ['url',     'URL',                 function(s){ return s.url; }],
+    ['md',      'Markdown · link',     function(s){ return '['+esc.md(s.title || s.alt || 'immagine')+']('+s.url+')'; }],
+    ['mdimg',   'Markdown · immagine', function(s){ return '!['+esc.md(alt(s))+']('+s.url+')'; }],
+    ['mdthumb', 'Markdown · miniatura',function(s){ return '[!['+esc.md(alt(s))+']('+s.thumb+')]('+s.url+')'; }],
+    ['bb',      'BBCode',              function(s){ return '[img]'+s.url+'[/img]'; }],
+    ['bbthumb', 'BBCode · miniatura',  function(s){ return '[url='+s.url+'][img]'+s.thumb+'[/img][/url]'; }],
+    ['html',    'HTML',                function(s){ return '<img src="'+s.url+'" alt="'+esc.html(alt(s))+'"'+wh(s)+' loading="lazy" decoding="async">'; }],
+    ['hugo',    'Hugo · figure',       function(s){ return '{{< figure src="'+s.url+'" alt="'+esc.q(alt(s))+'"'+wh(s)+' >}}'; }],
+    ['thumb',   'URL miniatura',       function(s){ return s.thumb; }]
+  ];
+  var FMT = {};
+  FORMATS.forEach(function(f){ FMT[f[0]] = f; });
+  var KEY = 'gallery-snippet';
+  function current(){ var k = null; try{ k = localStorage.getItem(KEY); }catch(e){} return FMT[k] ? k : 'url'; }
+  function setCurrent(k){ try{ localStorage.setItem(KEY, k); }catch(e){} sync(); }
+  function sync(){
+    var k = current();
+    [].forEach.call(document.querySelectorAll('[data-snip-copy]'), function(b){
+      if (!b.hasAttribute('data-busy')) b.textContent = 'copia · ' + FMT[k][1];
+    });
+    [].forEach.call(document.querySelectorAll('select[data-snip-format]'), function(sel){ sel.value = k; });
+  }
+  function render(root){
+    [].forEach.call((root || document).querySelectorAll('[data-snip-all]'), function(box){
+      if (box.children.length) return;
+      FORMATS.forEach(function(f){
+        var b = document.createElement('button');
+        b.type = 'button'; b.setAttribute('data-fmt', f[0]); b.textContent = f[1];
+        box.appendChild(b);
+      });
+    });
+    [].forEach.call(document.querySelectorAll('select[data-snip-format]'), function(sel){
+      if (!sel.options.length) FORMATS.forEach(function(f){ sel.add(new Option(f[1], f[0])); });
+    });
+    sync();
+  }
+  /* Clipboard API se c'e' e la concede; altrimenti (permesso negato, browser
+   * incorporati, contesto non sicuro) il vecchio metodo con execCommand. */
+  function legacyCopy(t){
+    var ta = document.createElement('textarea'), done = false, prev = document.activeElement;
+    ta.value = t; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.top = '-1000px';
+    document.body.appendChild(ta); ta.select();
+    try{ done = document.execCommand('copy'); }catch(e){}
+    ta.remove();
+    if (prev && prev.focus) prev.focus();
+    return done ? Promise.resolve() : Promise.reject(new Error('copia non riuscita'));
+  }
+  function copyText(t){
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(t).catch(function(){ return legacyCopy(t); });
+    }
+    return legacyCopy(t);
+  }
+  function textOf(data, k){ return FMT[k || current()][2](data); }
+  document.addEventListener('click', function(e){
+    var b = e.target.closest('[data-snip-copy],[data-fmt]'); if (!b) return;
+    var box = b.closest('[data-snip]'), data = null;
+    try{ data = JSON.parse(box.getAttribute('data-snip')); }catch(err){ return; }
+    var k = b.getAttribute('data-fmt') || current();
+    if (b.hasAttribute('data-fmt')) setCurrent(k);
+    var main = box.querySelector('[data-snip-copy]') || b;
+    copyText(textOf(data, k)).then(function(){ return 'copiato ✓'; }, function(){ return 'copia non riuscita'; })
+      .then(function(msg){
+        main.setAttribute('data-busy', ''); main.textContent = msg + ' · ' + FMT[k][1];
+        setTimeout(function(){ main.removeAttribute('data-busy'); sync(); }, 1300);
+      });
+  });
+  document.addEventListener('change', function(e){
+    if (e.target.matches && e.target.matches('select[data-snip-format]')) setCurrent(e.target.value);
+  });
+  window.gallerySnip = {
+    current: current, label: function(k){ return FMT[k || current()][1]; },
+    text: textOf, copy: copyText, render: render
+  };
+  render(document);
 
   /* ---- lightbox ---- */
   var lb=document.getElementById('lb'); if(!lb) return;

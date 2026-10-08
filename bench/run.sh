@@ -21,6 +21,9 @@
 #      --dir DIR    cartella del banco (default: nuova cartella temporanea)
 #      --keep       non cancellare il banco alla fine (contiene copie delle
 #                   immagini private: ricordarsi di rimuoverlo)
+#      --serve      niente prove: lascia il server acceso per provare a mano
+#                   nel browser, gia' autenticato, fino a Ctrl+C (poi il
+#                   banco viene cancellato come sempre)
 #
 #  Esito: 0 se tutte le prove passano, 1 altrimenti.
 # =============================================================================
@@ -31,6 +34,7 @@ CODE="$(cd "$HERE/.." && pwd)"
 DATA=""
 BENCH=""
 KEEP=0
+SERVE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -38,6 +42,7 @@ while [ $# -gt 0 ]; do
     --data) DATA="$(cd "${2:?}" && pwd)"; shift ;;
     --dir)  BENCH="${2:?}"; shift ;;
     --keep) KEEP=1 ;;
+    --serve) SERVE=1 ;;
     -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
     *) echo "opzione sconosciuta: $1" >&2; exit 2 ;;
   esac
@@ -85,6 +90,7 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+trap 'exit 130' INT TERM      # cosi' anche Ctrl+C e kill passano da cleanup
 
 say "banco: $BENCH"
 mkdir -p "$BENCH/www/gallery" "$BENCH/db" "$BENCH/tools" "$BENCH/log" "$BENCH/sessions" "$BENCH/tmp"
@@ -118,7 +124,8 @@ PHP
 cat > "$BENCH/tools/bench.json" <<JSON
 {"bench":"$BENCH","www":"$BENCH/www/gallery","db":"$BENCH/db/gallery.db",
  "base":"http://127.0.0.1:$PORT","user":"bench","pass":"$PASS","token":"$TOKEN",
- "log":"$BENCH/log/php_errors.log","real_db":"$REAL_DB","real_data":"$DATA"}
+ "log":"$BENCH/log/php_errors.log","real_db":"$REAL_DB","real_data":"$DATA",
+ "autologin":$( [ "$SERVE" -eq 1 ] && echo true || echo false )}
 JSON
 
 # --- Verifica di isolamento, PRIMA di avviare qualunque cosa ------------------
@@ -149,6 +156,13 @@ for _ in $(seq 50); do
   curl -s -o /dev/null "http://127.0.0.1:$PORT/gallery/i.php" && break
   sleep 0.1
 done
+
+if [ "$SERVE" -eq 1 ]; then
+  say "banco acceso: http://127.0.0.1:$PORT/gallery/  (gia' autenticato, Ctrl+C per chiudere)"
+  echo "   log PHP: $BENCH/log/php_errors.log"
+  wait "$SERVER_PID" || true
+  exit 0
+fi
 
 # --- Prove ----------------------------------------------------------------------
 say "prove"

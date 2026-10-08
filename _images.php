@@ -85,3 +85,38 @@ function thumb_path(string $filename): string {
   global $THUMBS;
   return rtrim($THUMBS, '/') . '/' . $filename;
 }
+
+/* Indirizzi pubblici (hotlink) di originale e miniatura. */
+function public_urls(string $short): array {
+  global $BASE_URL;
+  return ['url' => $BASE_URL . '/i/' . $short, 'thumb' => $BASE_URL . '/t/' . $short];
+}
+
+/* Dati da cui nascono gli snippet (URL, Markdown, BBCode, HTML, Hugo...).
+ * I formati veri e propri sono definiti in un solo posto, il JavaScript di
+ * _theme.php: qui si preparano solo i dati, per la pagina e per le risposte
+ * JSON di upload.php. */
+function snippet_data(array $r): array {
+  return ['id' => (string) $r['short']] + public_urls((string) $r['short']) + [
+    'width'  => (int) ($r['width'] ?? 0),
+    'height' => (int) ($r['height'] ?? 0),
+    'title'  => (string) ($r['title'] ?? ''),
+    'alt'    => (string) ($r['alt'] ?? ''),
+    'folder' => (string) ($r['folder'] ?? ''),
+  ];
+}
+
+/* Attributo data-snip pronto per l'HTML (JSON con escape per attributo). */
+function snippet_attr(array $r): string {
+  $json = json_encode(snippet_data($r), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+  return 'data-snip="' . htmlspecialchars((string) $json, ENT_QUOTES) . '"';
+}
+
+/* Il componente "copia": pulsante nel formato in uso + tutti gli altri.
+ * I pulsanti li riempie il JavaScript del tema. */
+function snippet_box(array $r, string $label = 'link &amp; embed'): string {
+  return '<div class="snip" ' . snippet_attr($r) . '>'
+       . '<button type="button" class="snip-copy" data-snip-copy>copia</button>'
+       . '<details><summary>' . $label . '</summary><div class="copies" data-snip-all></div></details>'
+       . '</div>';
+}

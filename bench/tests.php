@@ -76,6 +76,21 @@ function req(string $method, string $path, array $o = []): array {
 
 function browser_get(string $path): array { return req('GET', $path, ['auth' => true, 'session' => true]); }
 function browser_post(string $path, array $fields): array { return req('POST', $path, ['auth' => true, 'session' => true, 'post' => $fields]); }
+function browser_post_json(string $path, array $fields): array {
+  $r = req('POST', $path, ['auth' => true, 'session' => true, 'post' => $fields, 'headers' => ['Accept: application/json']]);
+  $r['json'] = json_decode($r['body'], true);
+  return $r;
+}
+/* Upload dal caricatore della pagina; restituisce [risposta, json]. */
+function upload_json(string $file, string $mime, array $extra = []): array {
+  $r = browser_post_json('/gallery/upload.php', ['csrf' => csrf(), 'img' => new CURLFile($file, $mime, basename($file))] + $extra);
+  return [$r, $r['json']];
+}
+/* Tutti gli attributi data-snip di una pagina, decodificati. */
+function snips(string $html): array {
+  preg_match_all('~data-snip="([^"]*)"~', $html, $m);
+  return array_values(array_filter(array_map(fn($a) => json_decode(html_entity_decode($a, ENT_QUOTES), true), $m[1])));
+}
 
 function csrf(): string {
   $r = browser_get('/gallery/');
@@ -170,6 +185,14 @@ group('Migrazioni sulla copia del DB reale', function () use (&$live_shorts, &$f
   check('integrity-check dell\'indice FTS rispetto a images', $fts_ok);
   req('GET', "/gallery/i/$first"); req('GET', '/gallery/', ['auth' => true]);
   check('richieste successive non rimigrano', versions() === $EXPECT);
+  // v3: impronta sha256 di ogni originale presente su disco, giusta
+  $bad = []; $n = 0;
+  foreach (db_bench()->query("SELECT short, filename, sha256 FROM images") as $row) {
+    if (!is_file("$WWW/uploads/{$row['filename']}")) continue;
+    $n++;
+    if ($row['sha256'] !== hash_file('sha256', "$WWW/uploads/{$row['filename']}")) $bad[] = $row['short'];
+  }
+  check("impronte sha256 complete e corrette ($n originali)", $n > 0 && !$bad, implode(',', array_slice($bad, 0, 5)));
   // v2: le immagini piu' vecchie, prima assenti dall'indice, ora si trovano
   $oldest = db_bench()->query("SELECT short, title FROM images WHERE COALESCE(title,'') <> '' ORDER BY id LIMIT 1")->fetch();
   if ($oldest) {
@@ -263,6 +286,9 @@ group('API', function () use (&$live_shorts, &$first, &$uploaded, &$n_img, &$cop
   $r = req('POST', '/gallery/api/upload.php', ['auth' => true, 'headers' => ['X-Api-Token: ' . $C['token']], 'post' => ['file' => new CURLFile($f, 'image/jpeg', 'api.jpg'), 'folder' => 'Banco']]);
   $j = json_decode($r['body'], true);
   check('upload API con X-Api-Token -> JSON ok', $r['code'] === 200 && ($j['ok'] ?? false) === true && str_starts_with($j['url'] ?? '', $C['base'] . '/gallery/i/'), "HTTP {$r['code']} " . substr($r['body'], 0, 80));
+  check('  JSON API: miniatura /t/, misure, link di cancellazione, duplicate=false',
+    ($j['thumb'] ?? '') === $C['base'] . '/gallery/t/' . ($j['id'] ?? '') && ($j['width'] ?? 0) === 400 && ($j['height'] ?? 0) === 300
+    && str_contains($j['delete'] ?? '', '/delete.php?c=') && ($j['duplicate'] ?? null) === false);
   if (!empty($j['id'])) $api_short = $j['id'];
   $r = req('POST', '/gallery/api/upload.php', ['auth' => true, 'headers' => ['X-Api-Token: sbagliato-sbagliato-sbagliato'], 'post' => ['file' => new CURLFile($f, 'image/jpeg', 'api.jpg')]]);
   check('token errato -> 401', $r['code'] === 401);
@@ -321,8 +347,86 @@ group('Difese', function () use (&$live_shorts, &$first, &$uploaded, &$n_img, &$
   }
   check('parametri ostili: nessun warning nel log', !preg_match('~PHP (Warning|Notice|Deprecated|Fatal)~', log_since($off)));
 
+  $sid = array_key_first($uploaded);
+  foreach (['/gallery/' => 'galleria', '/gallery/admin/' => 'admin'] as $p => $where) {
+    $r = req('GET', $p . '?q=' . rawurlencode("id:$sid"), ['auth' => true]);
+    check("ricerca id:CODICE in $where trova l'immagine", $r['code'] === 200 && str_contains($r['body'], "/i/$sid"));
+  }
   $r = req('GET', '/gallery/?q=' . rawurlencode('prova 4'), ['auth' => true]);
   check('ricerca FTS trova un\'immagine appena caricata', $r['code'] === 200 && str_contains($r['body'], 'prova 4'));
+});
+
+/* ======================================================================= */
+group('Doppioni, risposta JSON, snippet', function () use (&$live_shorts, &$first, &$uploaded, &$n_img, &$copy_migrated, $C, $WWW, $TMP, $EXPECT) {
+  $count = fn() => (int) q1("SELECT COUNT(*) FROM images");
+  $f = make_img('json', 700, 300, 'png');
+
+  // a) il caricatore della pagina riceve JSON
+  [$r, $j] = upload_json($f, 'image/png', ['folder' => 'Banco', 'title' => 'json prova', 'alt' => 'alt json']);
+  $id = $j['id'] ?? '';
+  check('caricatore: risposta JSON ok, duplicate=false', $r['code'] === 200 && ($j['ok'] ?? false) === true && ($j['duplicate'] ?? null) === false, "HTTP {$r['code']} " . substr($r['body'], 0, 100));
+  check('  JSON: url /i/, miniatura /t/, misure, album, titolo',
+    ($j['url'] ?? '') === $C['base'] . "/gallery/i/$id" && ($j['thumb'] ?? '') === $C['base'] . "/gallery/t/$id"
+    && ($j['width'] ?? 0) === 700 && ($j['height'] ?? 0) === 300 && ($j['folder'] ?? '') === 'Banco' && ($j['title'] ?? '') === 'json prova');
+  check('  JSON del caricatore senza link di cancellazione (solo API)', !isset($j['delete']));
+  check('  impronta salvata nella riga', $id !== '' && (row($id)['sha256'] ?? '') === hash_file('sha256', $f));
+
+  // b) la stessa immagine di nuovo: link esistente, nessun file o riga in piu'
+  $n_up = count(files_in("$WWW/uploads")); $rows = $count();
+  [$r, $j2] = upload_json($f, 'image/png', ['folder' => 'Banco']);
+  check('stessa immagine di nuovo: duplicate=true, stesso link', ($j2['duplicate'] ?? null) === true && ($j2['id'] ?? '') === $id, json_encode($j2));
+  check('  nessun file e nessuna riga in piu\'', count(files_in("$WWW/uploads")) === $n_up && $count() === $rows);
+  [$r, $s2] = upload($f, 'image/png', ['folder' => 'Banco']);
+  check('stessa immagine dal form classico: 303 verso ?ok=ID&dup=1', $r['code'] === 303 && str_contains($r['h']['location'] ?? '', "ok=$id&dup=1"), $r['h']['location'] ?? '');
+  $page = req('GET', "/gallery/?ok=$id&dup=1", ['auth' => true]);
+  check('  la pagina lo dice e mostra gli snippet', str_contains($page['body'], 'Già in archivio') && in_array($id, array_column(snips($page['body']), 'id'), true));
+  check('  ?ok inesistente e dup[] non rompono la pagina',
+    req('GET', '/gallery/?ok=nonesiste&dup[]=1', ['auth' => true])['code'] === 200);
+
+  // c) doppione di un'immagine vera dell'archivio copiato
+  $real = db_bench()->query("SELECT short, filename, mime, COALESCE(folder,'') AS folder FROM images ORDER BY id LIMIT 1")->fetch();
+  copy("$WWW/uploads/{$real['filename']}", "$TMP/vera");
+  [$r, $j3] = upload_json("$TMP/vera", $real['mime'], ['folder' => 'Altro album']);
+  check("immagine gia' in archivio ({$real['short']}): restituito il suo link", ($j3['duplicate'] ?? null) === true && ($j3['id'] ?? '') === $real['short'], json_encode($j3));
+
+  // d) fra piu' righe sullo stesso file vince quella dello stesso album
+  browser_post('/gallery/admin/index.php', ['csrf' => csrf(), 'act' => 'copy', 'short' => $id, 'dest_folder' => 'Copie2']);
+  $copy = (string) q1("SELECT short FROM images WHERE sha256=? AND folder='Copie2'", [hash_file('sha256', $f)]);
+  check('"Copia" in admin conserva l\'impronta', $copy !== '' && row($copy)['sha256'] === row($id)['sha256']);
+  [$r, $j4] = upload_json($f, 'image/png', ['folder' => 'Copie2']);
+  check('  doppione caricato nell\'album della copia -> link della copia', ($j4['id'] ?? '') === $copy, json_encode($j4));
+  [$r, $j5] = upload_json($f, 'image/png', ['folder' => 'Ancora un altro']);
+  check('  doppione in un altro album -> la riga piu\' vecchia', ($j5['id'] ?? '') === $id, json_encode($j5));
+
+  // e) API: anche li' il doppione, con il link di cancellazione
+  $r = req('POST', '/gallery/api/upload.php', ['auth' => true, 'headers' => ['X-Api-Token: ' . $C['token']],
+    'post' => ['file' => new CURLFile($f, 'image/png', 'x.png')]]);
+  $ja = json_decode($r['body'], true);
+  check('API: doppione riconosciuto, con link di cancellazione', ($ja['duplicate'] ?? null) === true && in_array($ja['id'] ?? '', [$id, $copy], true) && isset($ja['delete']));
+
+  // f) errori in JSON per il caricatore
+  [$r, $je] = upload_json("$TMP/bomb.png", 'image/png');
+  check('bomba dal caricatore: 413 con errore JSON leggibile', $r['code'] === 413 && ($je['ok'] ?? null) === false && str_contains($je['error'] ?? '', 'megapixel'), $r['body']);
+  [$r, $je] = upload_json("$TMP/finta.jpg", 'image/jpeg');
+  check('file non immagine dal caricatore: 415 con errore JSON', $r['code'] === 415 && ($je['ok'] ?? null) === false);
+  $r = req('POST', '/gallery/upload.php', ['auth' => true, 'session' => true, 'headers' => ['Accept: application/json'],
+    'post' => ['img' => new CURLFile($f, 'image/png', 'x.png')]]);
+  check('caricatore senza token CSRF: 419', $r['code'] === 419);
+
+  // g) snippet nella pagina: dati giusti e nessuna iniezione
+  $evil_title = '"><img src=x onerror=alert(1)> [a](b)';
+  $evil_alt   = "</script><b>alt</b> & ]";
+  [$r, $jx] = upload_json(make_img('xss', 333, 111, 'png'), 'image/png', ['title' => $evil_title, 'alt' => $evil_alt, 'folder' => 'Banco']);
+  $xid = $jx['id'] ?? '';
+  foreach (['/gallery/?f=Banco' => 'galleria', '/gallery/admin/?q=' . rawurlencode("id:$xid") => 'admin'] as $path => $where) {
+    $html = req('GET', $path, ['auth' => true])['body'];
+    $sn = array_values(array_filter(snips($html), fn($d) => ($d['id'] ?? '') === $xid));
+    check("$where: data-snip con titolo e alt esatti, misure e indirizzi",
+      $sn && $sn[0]['title'] === $evil_title && $sn[0]['alt'] === $evil_alt && $sn[0]['width'] === 333
+      && $sn[0]['url'] === $C['base'] . "/gallery/i/$xid" && $sn[0]['thumb'] === $C['base'] . "/gallery/t/$xid");
+    check("$where: nessun tag iniettato nell'HTML", !str_contains($html, '<img src=x') && !str_contains($html, '<b>alt</b>'));
+    check("$where: selettore del formato presente", str_contains($html, 'data-snip-format'));
+  }
 });
 
 /* ======================================================================= */

@@ -67,6 +67,22 @@ function gallery_migrations(): array {
       }
     }],
 
+    /* v3 — impronta SHA-256 di ogni originale, per riconoscere i doppioni al
+     * caricamento. Le righe esistenti si completano qui, leggendo i file:
+     * al 2026-10 sono ~40 MB, una frazione di secondo. Le righe nate da
+     * "Copia" condividono il file e quindi anche l'impronta. */
+    3 => ['impronta sha256 degli originali (riconoscimento dei doppioni)', function (PDO $pdo): void {
+      global $UPLOADS;
+      $cols = array_column($pdo->query("PRAGMA table_info(images)")->fetchAll(PDO::FETCH_ASSOC), 'name');
+      if (!in_array('sha256', $cols, true)) $pdo->exec("ALTER TABLE images ADD COLUMN sha256 TEXT");
+      $pdo->exec("CREATE INDEX IF NOT EXISTS idx_images_sha256 ON images(sha256)");
+      $set = $pdo->prepare("UPDATE images SET sha256=? WHERE id=?");
+      foreach ($pdo->query("SELECT id, filename FROM images WHERE sha256 IS NULL")->fetchAll(PDO::FETCH_ASSOC) as $r) {
+        $f = rtrim((string) $UPLOADS, '/') . '/' . $r['filename'];
+        if (is_file($f)) $set->execute([hash_file('sha256', $f), $r['id']]);
+      }
+    }],
+
   ];
 }
 
