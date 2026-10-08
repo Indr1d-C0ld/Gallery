@@ -1,35 +1,39 @@
 <?php
-/* Migrazione idempotente. Eseguire da CLI:  php migrate.php
- * - crea/aggiorna schema base
- * - aggiunge la colonna folder se manca
- * - (ri)crea gli indici
- * - installa FTS5 se disponibile
+/* Migrazioni dello schema da riga di comando.
+ *
+ * Di norma NON serve: l'app applica da sola le migrazioni mancanti alla prima
+ * richiesta dopo un aggiornamento, come www-data (vedi _migrations.php).
+ * Resta utile per un DB nuovo, per il banco di prova e per controllare a che
+ * versione e' un database:
+ *
+ *   php migrate.php            applica le migrazioni mancanti, mostra lo stato
+ *   php migrate.php --status   sola lettura, anche da un utente che non puo'
+ *                              scrivere il DB: mostra lo stato senza toccarlo
  */
 if (php_sapi_name() !== 'cli') { http_response_code(403); exit("solo CLI\n"); }
 require_once __DIR__ . "/config.php";
+require_once __DIR__ . "/_migrations.php";
 
-$pdo = db();
 echo "DB: $DB_PATH\n";
 
-$pdo->exec(file_get_contents(__DIR__ . "/schema.sql"));
-echo "schema base: ok\n";
-
-$cols = array_column($pdo->query("PRAGMA table_info(images)")->fetchAll(), 'name');
-if (!in_array('folder', $cols, true)) {
-  $pdo->exec("ALTER TABLE images ADD COLUMN folder TEXT DEFAULT ''");
-  echo "colonna folder: aggiunta\n";
+if (in_array('--status', $argv, true)) {
+  // immutable=1: nessun lock, nessun file -wal/-shm, nessuna scrittura
+  $pdo = new PDO('sqlite:file:' . $DB_PATH . '?immutable=1', null, null, [
+    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+  ]);
 } else {
-  echo "colonna folder: già presente\n";
+  $pdo = db();   // la connessione applica gia' le migrazioni mancanti
+  @mkdir($UPLOADS, 0775, true);
+  @mkdir($THUMBS, 0775, true);
 }
 
-@mkdir($UPLOADS, 0775, true);
-@mkdir($THUMBS, 0775, true);
-
-try {
-  $pdo->exec(file_get_contents(__DIR__ . "/fts5_setup.sql"));
-  echo "FTS5: installato/aggiornato\n";
-} catch (Throwable $e) {
-  echo "FTS5: non disponibile (" . $e->getMessage() . ") – si userà LIKE\n";
+$cur = schema_version($pdo);
+echo "versione schema: $cur (codice: " . schema_latest() . ")\n";
+if ($cur > 0) {
+  foreach ($pdo->query("SELECT version, name, applied_at FROM schema_version ORDER BY version") as $r) {
+    printf("  v%d  %s  %s\n", $r['version'], date('Y-m-d H:i', (int)$r['applied_at']), $r['name']);
+  }
 }
-
-echo "fatto.\n";
+$pending = array_filter(array_keys(gallery_migrations()), fn($v) => $v > $cur);
+echo $pending ? "da applicare: v" . implode(', v', $pending) . "\n" : "nessuna migrazione in sospeso\n";
+echo "FTS5: " . ($pdo->query("SELECT 1 FROM sqlite_master WHERE name='images_fts'")->fetchColumn() ? "presente" : "assente (ricerca con LIKE)") . "\n";

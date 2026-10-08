@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/../config.php";
 require_once __DIR__ . "/../_theme.php";
+require_once __DIR__ . "/../_images.php";
 
 require_login();
 csrf_token();
@@ -54,25 +55,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   } elseif ($act === 'retthumb') {
     $q = db()->prepare("SELECT filename,mime FROM images WHERE short=?");
     $q->execute([$short]);
-    if (($r = $q->fetch()) && is_file($src = $UPLOADS . '/' . $r['filename'])) {
-      if ($img = @imagecreatefromstring(file_get_contents($src))) {
-        $ow = imagesx($img); $oh = imagesy($img);
-        $scale = min(1.0, $THUMB_MAX_W / max($ow, $oh));
-        $tw = max(1, (int)round($ow * $scale));
-        $th = max(1, (int)round($oh * $scale));
-        $thumb = imagecreatetruecolor($tw, $th);
-        imagealphablending($thumb, false); imagesavealpha($thumb, true);
-        imagecopyresampled($thumb, $img, 0, 0, 0, 0, $tw, $th, $ow, $oh);
-        $dst = $THUMBS . '/' . $r['filename'];
-        @mkdir(dirname($dst), 0775, true);
-        switch ($r['mime']) {
-          case 'image/jpeg': imagejpeg($thumb, $dst, 85); break;
-          case 'image/png':  imagepng($thumb, $dst, 6);   break;
-          case 'image/gif':  imagegif($thumb, $dst);      break;
-          case 'image/webp': imagewebp($thumb, $dst, 85); break;
-        }
-        imagedestroy($thumb); imagedestroy($img);
-      }
+    if ($r = $q->fetch()) {
+      make_thumb(upload_path($r['filename']), thumb_path($r['filename']), $r['mime']);
     }
 
   } elseif ($act === 'move') {

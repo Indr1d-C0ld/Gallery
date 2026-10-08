@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . "/config.php";
+require_once __DIR__ . "/_images.php";
 
 /* Chiamata via API con token (api/upload.php): salta login di sessione e CSRF,
    il token è già stato verificato. Altrimenti: richiede auth Apache + CSRF. */
@@ -86,7 +87,7 @@ $short  = shortcode(7);
 $delkey = bin2hex(random_bytes(8));
 
 $fname = $short . "." . $ext;
-$dest  = rtrim($UPLOADS, "/") . "/" . $fname;
+$dest  = upload_path($fname);
 
 /* 6) Salva file */
 if (!is_dir($UPLOADS)) {
@@ -101,42 +102,9 @@ if (!move_uploaded_file($f['tmp_name'], $dest)) {
 $w = $gi[0];
 $h = $gi[1];
 
-/* 8) Thumbnail */
+/* 8) Thumbnail (se fallisce, i.php ritenta alla prima richiesta) */
 if ($USE_THUMBS) {
-  if (!is_dir($THUMBS)) {
-    @mkdir($THUMBS, 0775, true);
-  }
-
-  // genera thumb solo se GD disponibile
-  if (function_exists('imagecreatefromstring')) {
-    $img = @imagecreatefromstring(@file_get_contents($dest));
-    if ($img) {
-      $ow = imagesx($img);
-      $oh = imagesy($img);
-
-      $scale = min(1.0, $THUMB_MAX_W / max($ow, $oh));
-      $tw = max(1, (int)round($ow * $scale));
-      $th = max(1, (int)round($oh * $scale));
-
-      $thumb = imagecreatetruecolor($tw, $th);
-      imagealphablending($thumb, false);
-      imagesavealpha($thumb, true);
-
-      imagecopyresampled($thumb, $img, 0, 0, 0, 0, $tw, $th, $ow, $oh);
-
-      $tpath = rtrim($THUMBS, "/") . "/" . $fname;
-
-      switch ($mime) {
-        case 'image/jpeg': imagejpeg($thumb, $tpath, 85); break;
-        case 'image/png':  imagepng($thumb,  $tpath, 6);  break;
-        case 'image/gif':  imagegif($thumb,  $tpath);     break;
-        case 'image/webp': imagewebp($thumb, $tpath, 85); break;
-      }
-
-      imagedestroy($thumb);
-      imagedestroy($img);
-    }
-  }
+  make_thumb($dest, thumb_path($fname), $mime);
 }
 
 /* 9) DB insert
@@ -162,8 +130,8 @@ try {
     $folder
   ]);
 } catch (Throwable $e) {
-  @unlink($dest);                                  // niente riga, niente file
-  @unlink(rtrim($THUMBS, "/") . "/" . $fname);     // e nemmeno la miniatura
+  @unlink($dest);                 // niente riga, niente file
+  @unlink(thumb_path($fname));    // e nemmeno la miniatura
   error_log('gallery upload: insert fallito per ' . $fname . ' — ' . $e->getMessage());
   http_response_code(500);
   exit("salvataggio non riuscito");

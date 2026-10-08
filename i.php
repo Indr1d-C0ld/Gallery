@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . "/config.php";
+require_once __DIR__ . "/_images.php";
 
 function get_short_from_request(): ?string {
   // 1) query string ?c=SHORT
@@ -14,41 +15,6 @@ function get_short_from_request(): ?string {
     return preg_replace('~[^A-Za-z0-9_-]~', '', (string)$parts[2]);
   }
   return null;
-}
-
-function ensure_thumb(string $src, string $dst, string $mime): bool {
-  global $THUMB_MAX_W;
-
-  if (!function_exists('imagecreatefromstring')) return false;
-  if (!is_file($src)) return false;
-
-  $img = @imagecreatefromstring(@file_get_contents($src));
-  if (!$img) return false;
-
-  $ow = imagesx($img); $oh = imagesy($img);
-  $scale = min(1.0, $THUMB_MAX_W / max($ow, $oh));
-  $tw = max(1, (int)round($ow * $scale));
-  $th = max(1, (int)round($oh * $scale));
-
-  $thumb = imagecreatetruecolor($tw, $th);
-  imagealphablending($thumb, false);
-  imagesavealpha($thumb, true);
-  imagecopyresampled($thumb, $img, 0, 0, 0, 0, $tw, $th, $ow, $oh);
-
-  $ok = false;
-  @mkdir(dirname($dst), 0775, true);
-
-  switch ($mime) {
-    case 'image/jpeg': $ok = imagejpeg($thumb, $dst, 85); break;
-    case 'image/png':  $ok = imagepng($thumb,  $dst, 6);  break;
-    case 'image/gif':  $ok = imagegif($thumb,  $dst);     break;
-    case 'image/webp': $ok = imagewebp($thumb, $dst, 85); break;
-    default: $ok = false; break;
-  }
-
-  imagedestroy($thumb);
-  imagedestroy($img);
-  return (bool)$ok;
 }
 
 $short = get_short_from_request();
@@ -71,8 +37,8 @@ if (!$r) { http_response_code(404); exit; }
 $fname = $r['filename'];
 $mime  = $r['mime'];
 
-$full_path  = rtrim($UPLOADS, "/") . "/" . $fname;
-$thumb_path = rtrim($THUMBS,  "/") . "/" . $fname;
+$full_path  = upload_path($fname);
+$thumb_path = thumb_path($fname);
 
 if (!is_file($full_path)) { http_response_code(404); exit; }
 
@@ -82,7 +48,7 @@ $serve_path = $full_path;
 if ($want_thumb && $USE_THUMBS) {
   if (!is_file($thumb_path)) {
     // tenta rigenerazione al volo
-    ensure_thumb($full_path, $thumb_path, $mime);
+    make_thumb($full_path, $thumb_path, $mime);
   }
   if (is_file($thumb_path)) {
     $serve_path = $thumb_path;

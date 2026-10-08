@@ -1,4 +1,6 @@
 -- Schema Gallery (allineato al DB in produzione – 2026-09-10)
+-- E' la versione 1 dello schema, applicata dalla migrazione 1 in _migrations.php.
+-- NON modificarlo: i cambiamenti successivi vanno scritti come nuove migrazioni.
 CREATE TABLE IF NOT EXISTS images (
   id         INTEGER PRIMARY KEY,
   short      TEXT UNIQUE NOT NULL,

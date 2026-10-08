@@ -1,24 +1,16 @@
 <?php
+/* Rigenera le miniature mancanti (con --all: tutte).
+ *   php regen_thumbs.php [--all]
+ * Sul live va eseguito come www-data (il DB e thumbs/ sono suoi). */
 if (php_sapi_name() !== 'cli') { require_once __DIR__."/config.php"; require_login(); }
 else { require_once __DIR__."/config.php"; }
-$rows = db()->query("SELECT filename,mime FROM images")->fetchAll(PDO::FETCH_ASSOC);
-foreach ($rows as $r) {
-  $src=$UPLOADS.'/'.$r['filename']; $dst=$THUMBS.'/'.$r['filename'];
-  if (!is_file($src) || is_file($dst)) continue;
-  $img=@imagecreatefromstring(file_get_contents($src)); if(!$img) continue;
-  $ow=imagesx($img); $oh=imagesy($img);
-  $scale=min(1.0,$THUMB_MAX_W/max($ow,$oh));
-  $tw=(int)($ow*$scale); $th=(int)($oh*$scale);
-  $thumb=imagecreatetruecolor($tw,$th);
-  imagealphablending($thumb,false); imagesavealpha($thumb,true);
-  imagecopyresampled($thumb,$img,0,0,0,0,$tw,$th,$ow,$oh);
-  switch($r['mime']){
-    case 'image/jpeg': imagejpeg($thumb,$dst,85); break;
-    case 'image/png':  imagepng($thumb,$dst,6);   break;
-    case 'image/gif':  imagegif($thumb,$dst);     break;
-    case 'image/webp': imagewebp($thumb,$dst,85); break;
-  }
-  imagedestroy($thumb); imagedestroy($img);
-}
-echo "done\n";
+require_once __DIR__ . "/_images.php";
 
+$all = in_array('--all', $argv ?? [], true);
+$made = 0; $failed = 0;
+foreach (db()->query("SELECT filename,mime FROM images")->fetchAll() as $r) {
+  $src = upload_path($r['filename']); $dst = thumb_path($r['filename']);
+  if (!is_file($src) || (!$all && is_file($dst))) continue;
+  make_thumb($src, $dst, $r['mime']) ? $made++ : $failed++;
+}
+echo "done: $made generate, $failed non riuscite\n";

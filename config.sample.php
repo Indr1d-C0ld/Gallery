@@ -129,17 +129,38 @@ function csrf_check(): void {
 }
 
 /* --- DB ------------------------------------------------------------- */
+/* Alla prima connessione di ogni richiesta applica le migrazioni mancanti
+ * (vedi _migrations.php): e' cosi' che lo schema si aggiorna come www-data.
+ * La connessione viene ricordata solo se lo schema e' a posto. */
 function db(): PDO {
   global $DB_PATH;
   static $pdo = null;
   if (!$pdo) {
-    $pdo = new PDO('sqlite:' . $DB_PATH, null, null, [
+    $conn = new PDO('sqlite:' . $DB_PATH, null, null, [
       PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
       PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     ]);
-    $pdo->exec('PRAGMA journal_mode = WAL');
-    $pdo->exec('PRAGMA busy_timeout = 5000');
-    $pdo->exec('PRAGMA foreign_keys = ON');
+    $conn->exec('PRAGMA busy_timeout = 5000');
+    $conn->exec('PRAGMA foreign_keys = ON');
+    /* WAL resta scritto nel file: va impostato solo se manca, cioe' su un DB
+     * nuovo o appena ripristinato. Li', con piu' richieste insieme, il cambio
+     * di modalita' puo' bloccarsi fra due connessioni e SQLite risponde
+     * subito "database is locked" senza attendere (busy_timeout non serve):
+     * si riprova per qualche istante. Trovato dal banco, 2026-10-08. */
+    for ($try = 1; ; $try++) {
+      try {
+        if (strtolower((string) $conn->query('PRAGMA journal_mode')->fetchColumn()) !== 'wal') {
+          $conn->exec('PRAGMA journal_mode = WAL');
+        }
+        break;
+      } catch (PDOException $e) {
+        if ($try >= 40 || stripos($e->getMessage(), 'locked') === false) throw $e;
+        usleep(random_int(20000, 80000));
+      }
+    }
+    require_once __DIR__ . '/_migrations.php';
+    migrate_db($conn);
+    $pdo = $conn;
   }
   return $pdo;
 }
@@ -192,8 +213,6 @@ function page_offset(int &$page, int $total, int $per): int {
  * distruggerebbe anche l'originale.
  */
 function delete_image(string $short): bool {
-  global $UPLOADS, $THUMBS;
-
   $st = db()->prepare("SELECT filename FROM images WHERE short=?");
   $st->execute([$short]);
   $r = $st->fetch();
@@ -204,8 +223,9 @@ function delete_image(string $short): bool {
   $c = db()->prepare("SELECT COUNT(*) FROM images WHERE filename=?");
   $c->execute([$r['filename']]);
   if ((int)$c->fetchColumn() === 0) {
-    @unlink(rtrim($UPLOADS, '/') . '/' . $r['filename']);
-    @unlink(rtrim($THUMBS,  '/') . '/' . $r['filename']);
+    require_once __DIR__ . '/_images.php';
+    @unlink(upload_path($r['filename']));
+    @unlink(thumb_path($r['filename']));
   }
   return true;
 }

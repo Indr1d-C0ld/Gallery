@@ -1,5 +1,49 @@
 # Changelog
 
+## 2026-10-08 — Fondamenta: banco di prova, migrazioni automatiche, pipeline unica
+
+**Banco di prova (`bench/`).** `bash bench/run.sh` copia per intero
+l'installazione (codice, database, immagini, miniature) in una cartella
+temporanea, la serve con `php -S` su 127.0.0.1 riproducendo le regole di
+Apache da cui l'app dipende, ed esegue `bench/tests.php`: un centinaio di
+prove su migrazioni, upload, miniature, API, immagini-bomba, CSRF,
+autenticazione, parametri ostili, copia/elimina, permessi simulati e
+concorrenza. Il banco ha un `secret.php` proprio (il DB reale non viene mai
+aperto in scrittura), confronta l'impronta dei dati reali prima e dopo e si
+cancella alla fine. `bash bench/live_check.sh [--write-test]` controlla invece
+l'installazione vera senza sudo: permessi calcolati per l'utente del server
+web, risposte HTTP senza credenziali, versione dello schema; con
+`--write-test` fa eseguire al server web una scrittura reale (rigenera una
+miniatura e poi rimette l'originale).
+
+**Migrazioni automatiche (`_migrations.php`).** Con il database in una
+cartella scrivibile solo dal server web, `php migrate.php` lanciato dal
+proprio utente non può più modificarlo. Ora le migrazioni le applica l'app
+alla prima richiesta: tabella `schema_version`, lock di scrittura di SQLite
+(`BEGIN IMMEDIATE`) con rilettura della versione sotto il lock, tutte le
+migrazioni mancanti in un'unica transazione. `php migrate.php --status`
+mostra lo stato in sola lettura.
+
+**Indice di ricerca incompleto: corretto.** Il "backfill" di
+`fts5_setup.sql` non inseriva nulla: con `content='images'` anche
+`SELECT rowid FROM images_fts` legge dalla tabella `images`, quindi le
+immagini caricate prima della creazione dell'indice non vi entravano mai e la
+ricerca non le trovava. La migrazione 2 ricostruisce l'indice con
+`'rebuild'`.
+
+**Una sola pipeline delle miniature (`_images.php`).** Il codice delle
+miniature esisteva in quattro copie già divergenti: `regen_thumbs.php`
+calcolava le misure senza il minimo di 1 pixel e su un'immagine molto
+allungata andava in errore fatale. Ora c'è un'unica `make_thumb()`, con
+controllo dei pixel prima di decodificare, scrittura atomica (file
+temporaneo + rename) e nessuna eccezione verso il chiamante.
+
+**Primo avvio concorrente.** `PRAGMA journal_mode = WAL` veniva eseguito a
+ogni connessione e prima di `busy_timeout`: su un database nuovo o appena
+ripristinato, due richieste contemporanee potevano bloccarsi a vicenda e
+ricevere subito `database is locked`. Ora la modalità si imposta solo se
+manca, con qualche nuovo tentativo.
+
 ## 2026-09-15 (4) — Database fuori dal docroot
 
 La cartella dell'applicazione non deve essere scrivibile dall'utente del
