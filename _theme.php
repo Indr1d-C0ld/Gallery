@@ -300,6 +300,16 @@ table.dt img{width:44px;height:44px;object-fit:cover;border:1px solid var(--fram
 .cols span.zero{background:var(--edge);height:2px!important}
 .cols-x{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:4px}
 
+/* ---- Private, link a scadenza, strumenti (Tranche 5) ---- */
+.use.priv{color:var(--paper);background:var(--ink);border-color:var(--ink)}
+.snip-private{font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.5}
+.sharebox .sharelink,.sharelink{font-family:var(--mono);font-size:12px;word-break:break-all;background:var(--paper-2);
+  padding:2px 6px;border-radius:4px;display:inline-block;margin:4px 0}
+.share-form select{font-size:11px;padding:4px 6px}
+pre.code{font-family:var(--mono);font-size:12px;background:var(--paper-2);border:1px solid var(--edge);border-radius:6px;
+  padding:10px 12px;overflow-x:auto;white-space:pre;margin:10px 0 0}
+ol.note{padding-left:20px;line-height:1.7}
+
 /* =========================================================================
  * Mobile & tablet (telefono, tablet, o comunque puntatore touch)
  * Regole SOLO additive/di ingrandimento: non tocca nulla fuori da qui,

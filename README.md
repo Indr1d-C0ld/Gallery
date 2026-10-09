@@ -14,12 +14,18 @@ raggiungibili (hotlink) per poterle incollare su forum/siti esterni.
 | Percorso | Ruolo |
 |---|---|
 | `index.php` | galleria: griglia "contact sheet", album (con panoramica e copertine), etichette, ricerca, lightbox, caricamento (più file, incolla, trascina) |
-| `admin/index.php` | pannello: foglio di lavoro con azioni su più immagini e uso di ogni immagine, album (descrizione, copertina, ordine, rinomina/unisci), etichette, cruscotto, cestino; avviso prima di eliminare un'immagine ancora in uso |
-| `upload.php` / `api/upload.php` | upload da form (sessione + CSRF) e via API (token); posizione GPS tolta, doppioni riconosciuti |
-| `i.php` | consegna immagine, miniatura (`/t/`) e versioni ridotte (`?w=`), con ETag/Cache-Control |
+| `admin/index.php` | pannello: foglio di lavoro con azioni su più immagini e uso di ogni immagine, album (descrizione, copertina, ordine, rinomina/unisci), etichette, link a scadenza, cruscotto, strumenti, cestino; avviso prima di eliminare un'immagine ancora in uso |
+| `admin/tools.php` | configurazioni pronte con il token: ShareX (`.sxcu`) e script per Flameshot |
+| `upload.php` / `api/upload.php` | upload da form (sessione + CSRF) e via API (token in intestazione); posizione GPS tolta, doppioni riconosciuti |
+| `api/images.php` / `api/image.php` | API JSON: elenco e ricerca; dettaglio, modifica, cestino, ripristino, link a scadenza |
+| `api/telegram.php` | webhook del bot Telegram: una foto mandata al bot torna indietro come link |
+| `i.php` | consegna immagine, miniatura (`/t/`), versioni ridotte (`?w=`) e link a scadenza (`/i/TOKEN`), con ETag/Cache-Control |
+| `view.php` | consegna dietro login, per le immagini private e quelle nel cestino |
 | `delete.php` | sposta nel cestino via chiave di cancellazione (capability, non richiede login) |
 | `_images.php` | pipeline unica delle immagini: miniature, versioni ridotte, orientamento EXIF, rimozione GPS, snippet |
-| `_archive.php` | album, etichette, cestino, ricerca (FTS5 o LIKE) |
+| `_archive.php` | album, etichette, cestino, ricerca (FTS5 o LIKE), immagini private, link a scadenza |
+| `_ingest.php` | ingresso di un'immagine (upload e bot): controlli, posizione GPS, doppioni, salvataggio |
+| `_api.php` / `_telegram.php` | autenticazione e JSON dell'API; bot Telegram (webhook, collegamento con codice) |
 | `stats_update.php` | job notturno (cron): legge i log di accesso di Apache e aggiorna le statistiche d'uso in `stats/stats.db` |
 | `_stats.php` | statistiche d'uso: lettura delle righe di log, provenienze (pagine, app, servizi, bot), consultazione per il pannello |
 | `_migrations.php` | migrazioni dello schema, applicate dall'app alla prima richiesta |
@@ -36,8 +42,13 @@ raggiungibili (hotlink) per poterle incollare su forum/siti esterni.
   pagine applicative; `uploads/` e `thumbs/` non eseguono PHP.
 - MIME validato via `finfo` (whitelist jpeg/png/gif/webp — niente SVG);
   short-code e chiave di cancellazione random, confronto con `hash_equals`.
-- L'API (`api/upload.php`) resta disattivata (503) finché non imposti un
-  token valido in `secret.php`.
+- L'API resta disattivata (503) finché non imposti un token valido in
+  `secret.php`. Il token va **solo** nell'intestazione `X-Api-Token`, mai
+  nell'indirizzo (finirebbe nei log). Con la conf installata da
+  `apply_root_tasks.sh` i quattro script di `api/` non chiedono la Basic
+  Auth: il token è l'unica chiave (per Telegram, il segreto del webhook).
+- Immagini **private**: `/i/` risponde 404; si condividono con link a
+  scadenza (`/i/TOKEN`, 22 caratteri casuali, revocabili).
 
 ## Installazione
 
@@ -57,7 +68,10 @@ php migrate.php
 # 3. Apache — vedi deploy/gallery.conf.sample, poi:
 sudo bash apply_root_tasks.sh --host tuo-dominio.tld
 
-# 4. Statistiche d'uso (facoltative): il server web le legge, non le scrive
+# 4. Bot Telegram (facoltativo): token da @BotFather in secret.php
+#    ('TELEGRAM_BOT_TOKEN' => '…'), poi nel pannello Strumenti → Collega il webhook
+
+# 5. Statistiche d'uso (facoltative): il server web le legge, non le scrive
 chgrp www-data stats && chmod 2750 stats
 crontab -e    # utente del gruppo adm, che legge i log di Apache:
 # 50 1 * * * umask 027; /usr/bin/php /percorso/gallery/stats_update.php --quiet >> /percorso/gallery/stats/update.log 2>&1

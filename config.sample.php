@@ -96,6 +96,13 @@ $API_TOKEN = $__secret['API_TOKEN']
   ?? getenv('GALLERY_API_TOKEN')
   ?: 'metti-qui-un-token-lungo';
 
+/* --- Bot Telegram (facoltativo, vedi _telegram.php) -----------------------
+ * Il token lo dà @BotFather; senza, il bot resta spento. Le foto finiscono
+ * nell'album $TELEGRAM_ALBUM. TELEGRAM_API cambia solo sul banco di prova. */
+$TELEGRAM_BOT_TOKEN = (string) ($__secret['TELEGRAM_BOT_TOKEN'] ?? '');
+$TELEGRAM_ALBUM     = (string) ($__secret['TELEGRAM_ALBUM'] ?? 'Telegram');
+$TELEGRAM_API       = rtrim((string) ($__secret['TELEGRAM_API'] ?? 'https://api.telegram.org'), '/');
+
 /* --- Difesa in profondità: richiede che Apache abbia già autenticato ---- */
 $ENFORCE_PHP_AUTH = true;   // metti false solo se PHP_AUTH_USER non arriva
 

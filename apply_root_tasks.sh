@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  apply_root_tasks.sh  —  esegue i passi "che restano da fare (serve root)"
-#  della revisione Gallery 2026-09.
+#  della revisione Gallery 2026-09, aggiornato per la Tranche 5 (2026-10).
 #
-#    1. installa la nuova gallery.conf  (hotlink pubblico solo su i.php / i/ / t/)
+#    1. installa la nuova gallery.conf  (hotlink pubblico solo su i.php / i/ / t/;
+#       dalla Tranche 5 anche l'API, che si apre con il solo token)
 #    2. crea gallery/secret.php con un API_TOKEN forte  (se non c'è già)
 #    3. (opzionale) reimposta la password Basic Auth dell'utente admin
 #    4. lancia  php migrate.php  come utente web
@@ -73,6 +74,10 @@ read -r -d '' NEW_CONF <<'EOF' || true
 # /etc/apache2/conf-available/gallery.conf
 # Revisione 2026-09: l'endpoint immagini (i.php, /i/, /t/) è pubblico per
 # consentire l'hotlink da forum/siti esterni; tutto il resto resta dietro Basic Auth.
+# Tranche 5 (2026-10): anche gli script dell'API sono fuori dalla Basic Auth,
+# perche' ShareX, Flameshot e il webhook di Telegram non hanno la password:
+# ognuno verifica da se' il suo token in intestazione (X-Api-Token, oppure
+# X-Telegram-Bot-Api-Secret-Token). Solo questi quattro file, per nome.
 
 <Directory /var/www/html/gallery>
     Options -Indexes -MultiViews
@@ -88,8 +93,10 @@ read -r -d '' NEW_CONF <<'EOF' || true
     AuthUserFile /etc/apache2/.htpasswd-gallery
 
     <RequireAny>
-        # pubblico: solo la consegna delle immagini
+        # pubblico: la consegna delle immagini (anche i link a scadenza /i/TOKEN)
         Require expr %{REQUEST_URI} =~ m#^/gallery/(i\.php$|i/[A-Za-z0-9_-]+$|t/[A-Za-z0-9_-]+$)#
+        # API: niente password, ogni script chiede il suo token in intestazione
+        Require expr %{REQUEST_URI} =~ m#^/gallery/api/(upload|images|image|telegram)\.php$#
         # tutto il resto: credenziali
         Require valid-user
     </RequireAny>
@@ -238,6 +245,16 @@ else
   else
     c_warn "nessuno short nel DB: salto il test hotlink"
   fi
+
+  # API: senza token deve rispondere l'app (401 in JSON), non Apache (401 Basic)
+  read -r code auth < <(curl -sS -k --max-time 15 "${RES[@]}" -o /dev/null -D - "https://$HOST/gallery/api/images.php" 2>/dev/null \
+      | awk 'NR==1{c=$2} tolower($1)=="www-authenticate:"{a="basic"} END{print c, (a?a:"-")}' || echo "000 -")
+  if [ "$code" = "401" ] && [ "$auth" = "-" ]; then c_ok "API raggiungibile con il solo token (senza token: 401 dell'app)"
+  elif [ "$auth" = "basic" ]; then c_err "API ancora dietro Basic Auth (passo 1 saltato o conf non ricaricata)"; fail=1
+  else c_warn "API: risposta inattesa ($code) — codice della Tranche 5 non ancora installato?"; fi
+
+  code="$("${CURL[@]}" "https://$HOST/gallery/view.php" || true)"
+  [ "$code" = "401" ] && c_ok "view.php protetto (HTTP $code)" || { c_err "view.php: atteso 401, ricevuto $code"; fail=1; }
 
   echo
   if [ "$fail" -eq 0 ]; then c_ok "TUTTO OK"; else

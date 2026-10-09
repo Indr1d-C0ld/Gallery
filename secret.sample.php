@@ -36,4 +36,9 @@ return [
     // leggere e file in cui scriverle, se diversi dai valori predefiniti.
     // 'ACCESS_LOGS' => '/var/log/apache2/access.log*',
     // 'STATS_DB'    => '/percorso/gallery/stats/stats.db',
+
+    // Bot Telegram (facoltativo): token da @BotFather; poi, nel pannello,
+    // Strumenti → Collega il webhook. Le foto vanno in TELEGRAM_ALBUM.
+    // 'TELEGRAM_BOT_TOKEN' => '123456789:AA…',
+    // 'TELEGRAM_ALBUM'     => 'Telegram',
 ];

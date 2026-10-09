@@ -206,15 +206,17 @@ function stats_day_ago(int $days): string {
   return (new DateTimeImmutable('today'))->modify('-' . max(0, $days - 1) . ' days')->format('Y-m-d');
 }
 
-/* Codici alias -> codice dell'immagine (copie fuse dalla migrazione v4):
- * le richieste a un alias contano per l'immagine a cui porta. */
+/* Codici alias -> codice dell'immagine (copie fuse dalla migrazione v4) e
+ * token dei link a scadenza (v5): le richieste contano per l'immagine a cui
+ * portano. */
 function stats_aliases(): array {
   static $map = null;
   if ($map === null) {
     $map = [];
     try {
       foreach (db()->query("SELECT a.short AS a, i.short AS s FROM short_aliases a JOIN images i ON i.id = a.image_id") as $r) $map[$r['a']] = $r['s'];
-    } catch (Throwable $e) { $map = []; }
+      foreach (db()->query("SELECT t.token AS a, i.short AS s FROM shares t JOIN images i ON i.id = t.image_id") as $r) $map[$r['a']] = $r['s'];
+    } catch (Throwable $e) { /* tabelle di una versione piu' vecchia: quello che c'e' */ }
   }
   return $map;
 }

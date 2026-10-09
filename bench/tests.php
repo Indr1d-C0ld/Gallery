@@ -6,8 +6,8 @@
  * partire se uno di essi esce dal banco o coincide con il DB reale.
  * Gruppi: migrazioni · integrita' dell'archivio copiato · upload e miniature
  * · difese (bombe, CSRF, auth, parametri ostili) · copia/elimina · statistiche
- * d'uso dai log · permessi · migrazioni su DB nuovi/vecchi/concorrenti · log
- * degli errori.
+ * d'uso dai log · API, private, link a scadenza · Telegram e screenshot ·
+ * permessi · migrazioni su DB nuovi/vecchi/concorrenti · log degli errori.
  * ========================================================================= */
 if (PHP_SAPI !== 'cli') { http_response_code(404); exit; }
 
@@ -396,7 +396,9 @@ group('API', function () use (&$live_shorts, &$first, &$uploaded, &$n_img, &$cop
   $r = req('POST', '/gallery/api/upload.php', ['auth' => true, 'post' => ['file' => new CURLFile($f, 'image/jpeg', 'api.jpg')]]);
   check('senza token -> 401', $r['code'] === 401);
   $r = req('POST', '/gallery/api/upload.php', ['headers' => ['X-Api-Token: ' . $C['token']], 'post' => ['file' => new CURLFile($f, 'image/jpeg', 'api.jpg')]]);
-  check('token giusto ma senza credenziali Apache -> 401', $r['code'] === 401);
+  check('token giusto senza password di Apache (regola della Tranche 5): basta il token', $r['code'] === 200 && (json_decode($r['body'], true)['duplicate'] ?? null) === true, "HTTP {$r['code']}");
+  $r = req('POST', '/gallery/api/upload.php?token=' . $C['token'], ['post' => ['file' => new CURLFile($f, 'image/jpeg', 'api.jpg')]]);
+  check('token nell\'indirizzo (?token=): 401, vale solo l\'intestazione', $r['code'] === 401 && (json_decode($r['body'], true)['ok'] ?? null) === false);
 });
 
 /* ======================================================================= */
@@ -1088,6 +1090,285 @@ group('Statistiche d\'uso: job notturno, cruscotto, avviso prima di eliminare', 
 
   // --- pulizia: torna la copia delle statistiche reali (per --serve e per i gruppi seguenti)
   if (is_file("$sd.reale")) rename("$sd.reale", $sd); else @unlink($sd);
+});
+
+/* ======================================================================= */
+group('API completa, immagini private, link a scadenza', function () use (&$first, $C, $WWW) {
+  $api = function (string $method, string $path, $post = null, bool $token = true) use ($C): array {
+    $o = ['headers' => $token ? ['X-Api-Token: ' . $C['token']] : []];
+    if ($post !== null) $o['post'] = $post;
+    $r = req($method, '/gallery/api/' . $path, $o);
+    $r['json'] = json_decode($r['body'], true);
+    return $r;
+  };
+  $adm = fn(string $qs = '') => req('GET', '/gallery/admin/index.php' . ($qs !== '' ? "?$qs" : ''), ['auth' => true, 'session' => true])['body'];
+
+  // --- elenco e ricerca
+  $r = $api('GET', 'images.php', null, false);
+  check('senza token: 401 in JSON dall\'app (Apache non chiede la password)', $r['code'] === 401 && ($r['json']['ok'] ?? null) === false
+    && !isset($r['h']['www-authenticate']));
+  $r = $api('GET', 'images.php?per=2');
+  check('elenco: 200, 2 per pagina, totale e pagine, campi della risposta', $r['code'] === 200 && count($r['json']['images'] ?? []) === 2
+    && ($r['json']['total'] ?? 0) > 2 && ($r['json']['pages'] ?? 0) >= 2
+    && !array_diff(['id', 'url', 'thumb', 'width', 'height', 'mime', 'size', 'public', 'private', 'trashed', 'tags', 'delete'], array_keys($r['json']['images'][0] ?? [])),
+    substr($r['body'], 0, 120));
+  $r = $api('GET', 'images.php?q=' . rawurlencode("id:$first"));
+  check('ricerca id:CODICE: proprio quella', ($r['json']['images'][0]['id'] ?? '') === $first && ($r['json']['total'] ?? 0) === 1);
+  check('elenco: POST rifiutato (405)', $api('POST', 'images.php', ['x' => '1'])['code'] === 405);
+
+  // --- dettaglio, modifica, cestino, ripristino
+  [, $j] = upload_json(make_img('api5', 901, 601, 'jpg'), 'image/jpeg', ['folder' => 'Banco']);
+  $S = $j['id'] ?? '';
+  check('preparazione: immagine larga 901 px', $S !== '');
+  check('dettaglio di un codice inesistente: 404 in JSON', $api('GET', 'image.php?c=nonesiste99')['code'] === 404);
+  $r = $api('GET', "image.php?c=$S");
+  check('dettaglio: uso, link a scadenza, etichette', $r['code'] === 200 && isset($r['json']['image']['usage'], $r['json']['image']['shares'])
+    && ($r['json']['image']['public'] ?? null) === true);
+  $r = $api('POST', "image.php?c=$S", ['action' => 'update', 'title' => 'molo di sera', 'folder' => 'API Prova', 'tags' => 'mare, sera']);
+  check('modifica: titolo, album, etichette', $r['code'] === 200 && row($S)['title'] === 'molo di sera' && row($S)['folder'] === 'API Prova'
+    && ($r['json']['image']['tags'] ?? []) === ['mare', 'sera'], json_encode($r['json']['image']['tags'] ?? null));
+  $r = $api('POST', "image.php?c=$S", ['action' => 'update', 'alt' => 'solo alt']);
+  check('  i campi non mandati restano', row($S)['title'] === 'molo di sera' && row($S)['alt'] === 'solo alt');
+  $api('POST', "image.php?c=$S", ['action' => 'update', 'private' => '1']);
+  check('privata via API: /i/ e /t/ rispondono 404', (int) row($S)['private'] === 1 && req('GET', "/gallery/i/$S")['code'] === 404 && req('GET', "/gallery/t/$S")['code'] === 404);
+  check('  view.php (dietro login) la mostra; senza login 401', req('GET', "/gallery/view.php?c=$S", ['auth' => true])['code'] === 200
+    && req('GET', "/gallery/view.php?c=$S&thumb=1", ['auth' => true])['code'] === 200 && req('GET', "/gallery/view.php?c=$S")['code'] === 401);
+  check('  private=1 nel filtro dell\'elenco', in_array($S, array_column($api('GET', 'images.php?private=1&per=100')['json']['images'] ?? [], 'id'), true));
+  $api('POST', "image.php?c=$S", ['action' => 'update', 'private' => '0']);
+  check('di nuovo pubblica: /i/ 200', req('GET', "/gallery/i/$S")['code'] === 200);
+  $r = $api('DELETE', "image.php?c=$S");
+  check('DELETE: nel cestino, /i/ 404', $r['code'] === 200 && ($r['json']['image']['trashed'] ?? null) === true && req('GET', "/gallery/i/$S")['code'] === 404);
+  check('  trash=1 la elenca', in_array($S, array_column($api('GET', 'images.php?trash=1&per=100')['json']['images'] ?? [], 'id'), true));
+  $api('POST', "image.php?c=$S", ['action' => 'restore']);
+  check('  action=restore: di nuovo pubblica', req('GET', "/gallery/i/$S")['code'] === 200);
+  check('azione sconosciuta: 400', $api('POST', "image.php?c=$S", ['action' => 'boh'])['code'] === 400);
+
+  // --- link a scadenza via API
+  $r = $api('POST', "image.php?c=$S", ['action' => 'share', 'seconds' => '120']);
+  $tok = basename((string) ($r['json']['share']['url'] ?? ''));
+  check('link a scadenza: 201, /i/TOKEN di 22 caratteri', $r['code'] === 201 && strlen($tok) === 22, substr($r['body'], 0, 120));
+  $api('POST', "image.php?c=$S", ['action' => 'update', 'private' => '1']);
+  $g = req('GET', "/gallery/i/$tok");
+  check('  funziona anche con l\'immagine privata, senza login', $g['code'] === 200 && str_starts_with($g['h']['content-type'] ?? '', 'image/'));
+  preg_match('~max-age=(\d+)~', $g['h']['cache-control'] ?? '', $m);
+  check('  cache privata e non oltre la scadenza; noindex', str_starts_with($g['h']['cache-control'] ?? '', 'private') && (int) ($m[1] ?? 999) <= 120
+    && str_contains($g['h']['x-robots-tag'] ?? '', 'noindex'), $g['h']['cache-control'] ?? '');
+  check('  /t/TOKEN e la versione ridotta ?w=480 (WebP)', req('GET', "/gallery/t/$tok")['code'] === 200
+    && (req('GET', "/gallery/i/$tok?w=480")['h']['content-type'] ?? '') === 'image/webp');
+  check('  il codice dell\'immagine privata resta 404', req('GET', "/gallery/i/$S")['code'] === 404);
+  check('  compare nel dettaglio', in_array($tok, array_column($api('GET', "image.php?c=$S")['json']['image']['shares'] ?? [], 'token'), true));
+  db_bench()->prepare("UPDATE shares SET expires_at=? WHERE token=?")->execute([time() - 5, $tok]);
+  check('scaduto: 410', req('GET', "/gallery/i/$tok")['code'] === 410);
+  $r = $api('POST', "image.php?c=$S", ['action' => 'share', 'seconds' => '999999999']);
+  $tok2 = basename((string) ($r['json']['share']['url'] ?? ''));
+  check('durata oltre 90 giorni: ridotta a 90', (int) q1("SELECT expires_at - created_at FROM shares WHERE token=?", [$tok2]) === 90 * 86400);
+  $api('POST', "image.php?c=$S", ['action' => 'unshare', 'token' => $tok2]);
+  check('unshare: revocato, 404', req('GET', "/gallery/i/$tok2")['code'] === 404);
+  check('  unshare di un token di un\'altra immagine: 404', $api('POST', "image.php?c=$first", ['action' => 'unshare', 'token' => $tok2])['code'] === 404);
+  $api('DELETE', "image.php?c=$S");
+  check('nessun link per un\'immagine nel cestino (409)', $api('POST', "image.php?c=$S", ['action' => 'share'])['code'] === 409);
+  $api('POST', "image.php?c=$S", ['action' => 'restore']);
+
+  // --- avviso "in uso" anche via API (statistiche finte: una pagina la mostra)
+  $sd = $C['stats_db']; $ap = $C['apache'];
+  if (is_file($sd)) rename($sd, "$sd.t5");
+  $api('POST', "image.php?c=$S", ['action' => 'update', 'private' => '0']);
+  $r = $api('POST', "image.php?c=$S", ['action' => 'share', 'seconds' => '3600']);
+  $tok3 = basename((string) ($r['json']['share']['url'] ?? ''));
+  file_put_contents("$ap/access.log", alog(1, '10:00:00', "/gallery/i/$S", 200, 'https://forum.example.org/viewtopic.php?t=5')
+    . alog(1, '10:05:00', "/gallery/i/$tok3", 200, 'https://chat.example.net/stanza'));
+  exec('php ' . escapeshellarg("$WWW/stats_update.php") . ' --quiet 2>&1', $out, $rc);
+  $r = $api('GET', "image.php?c=$S");
+  check('le viste di un link a scadenza contano per la sua immagine', ($r['json']['image']['usage']['views'] ?? 0) === 2, json_encode($r['json']['image']['usage'] ?? null));
+  $r = $api('DELETE', "image.php?c=$S");
+  check('DELETE di un\'immagine in uso: 409 con la spiegazione, resta', $r['code'] === 409 && str_contains($r['json']['in_use'] ?? '', '2 viste') && row($S)['deleted_at'] === null);
+  $r = $api('POST', "image.php?c=$S", ['action' => 'update', 'private' => '1']);
+  check('  anche renderla privata: 409', $r['code'] === 409 && (int) row($S)['private'] === 0);
+  admin_post(['act' => 'private', 'short' => $S, 'on' => '1']);
+  check('  e dal pannello: avviso, nulla cambia', (int) row($S)['private'] === 0 && str_contains($adm(), 'Rendi comunque privata'));
+  $r = $api('DELETE', "image.php?c=$S&force=1");
+  check('  con force=1: nel cestino', $r['code'] === 200 && row($S)['deleted_at'] !== null);
+  $api('POST', "image.php?c=$S", ['action' => 'restore']);
+  @unlink($sd); @unlink("$ap/access.log");
+  if (is_file("$sd.t5")) rename("$sd.t5", $sd);
+
+  // --- private e link dal pannello
+  [, $j] = upload_json(make_img('priv5', 333, 222, 'png'), 'image/png', ['folder' => 'Banco', 'private' => '1']);
+  $P = $j['id'] ?? '';
+  check('caricata come privata: JSON lo dice, /i/ 404', $P !== '' && ($j['private'] ?? null) === true && (int) row($P)['private'] === 1 && req('GET', "/gallery/i/$P")['code'] === 404);
+  $ws = $adm('q=' . rawurlencode("id:$P"));
+  check('foglio di lavoro: «privata», provino da view.php, nessuno snippet pubblico',
+    str_contains($ws, 'class="use priv"') && str_contains($ws, "view.php?c=$P&amp;thumb=1") && str_contains($ws, 'data-private="' . $P . '"')
+    && !str_contains($ws, '&quot;id&quot;:&quot;' . $P . '&quot;') && str_contains($ws, 'Rendi pubblica'));
+  $gal = req('GET', '/gallery/?q=' . rawurlencode("id:$P"), ['auth' => true])['body'];
+  check('galleria: «privata», provino e immagine piena da view.php', str_contains($gal, 'class="use priv"') && str_contains($gal, "data-full=\"{$C['base']}/gallery/view.php?c=$P\""));
+  admin_post(['act' => 'share', 'short' => $P, 'dur' => '3600']);
+  $ws = $adm();
+  check('Link a scadenza dal pannello: il link compare una volta, da copiare', (bool) preg_match('~<code class="sharelink">' . preg_quote($C['base'], '~') . '/gallery/i/([A-Za-z0-9_-]{22})</code>~', $ws, $mm)
+    && str_contains($ws, 'data-copy="') && !str_contains($adm(), 'class="flash sharebox"'));
+  $ptok = $mm[1] ?? '';
+  check('  la privata si apre con il link, senza login', req('GET', "/gallery/i/$ptok")['code'] === 200);
+  check('  durata non prevista: rifiutata', (admin_post(['act' => 'share', 'short' => $P, 'dur' => '42']) || true) && (int) q1("SELECT COUNT(*) FROM shares s JOIN images i ON i.id=s.image_id WHERE i.short=?", [$P]) === 1);
+  $lk = $adm('v=link');
+  check('vista Link: il link attivo, con l\'immagine', str_contains($lk, ">$P</code>") && str_contains($lk, "/gallery/i/$ptok") && str_contains($lk, '>attivo · fra'));
+  admin_post(['act' => 'share_revoke', 'token' => $ptok], 'link');
+  check('  revocato: 404 e «revocato» nella vista', req('GET', "/gallery/i/$ptok")['code'] === 404 && str_contains($adm('v=link'), '>revocato<'));
+  db_bench()->prepare("UPDATE shares SET revoked_at=? WHERE token=?")->execute([time() - 31 * 86400, $ptok]);
+  $adm('v=link');
+  check('  revocato da oltre 30 giorni: sparisce', !q1("SELECT 1 FROM shares WHERE token=?", [$ptok]));
+  admin_post(['act' => 'private', 'short' => $P, 'on' => '0']);
+  check('Rendi pubblica: /i/ 200', (int) row($P)['private'] === 0 && req('GET', "/gallery/i/$P")['code'] === 200);
+  admin_post(['act' => 'bulk', 'op' => 'private'] + ids_fields([$P, $S]));
+  check('multiple: rese private (nessuna in uso: niente avviso)', (int) row($P)['private'] === 1 && (int) row($S)['private'] === 1);
+  admin_post(['act' => 'bulk', 'op' => 'public'] + ids_fields([$P, $S]));
+  check('  rese pubbliche', (int) row($P)['private'] === 0 && (int) row($S)['private'] === 0);
+  $r = $api('POST', "image.php?c=$P", ['action' => 'share', 'seconds' => '600']);
+  admin_post(['act' => 'delete', 'short' => $P]);
+  admin_post(['act' => 'purge', 'short' => $P], 'cestino');
+  check('eliminata per sempre: i suoi link se ne vanno con lei', row($P) === null && !q1("SELECT COUNT(*) FROM shares WHERE token=?", [basename((string) ($r['json']['share']['url'] ?? 'x'))]));
+});
+
+/* ======================================================================= */
+group('Telegram, screenshot dal desktop', function () use (&$first, $C, $WWW, $TMP) {
+  $tgd = $C['tg_dir'];
+  $secret = substr(hash_hmac('sha256', 'gallery-telegram-webhook', $C['tg_token']), 0, 48);
+  $tg = fn(array $u, ?string $sec = null) => req('POST', '/gallery/api/telegram.php', ['post' => json_encode($u),
+          'headers' => array_merge(['Content-Type: application/json'], $sec === '' ? [] : ['X-Telegram-Bot-Api-Secret-Token: ' . ($sec ?? $secret)])]);
+  $msg = fn(int $from, array $extra) => ['update_id' => random_int(1, 1 << 30), 'message' => ['message_id' => random_int(1, 1 << 20),
+          'from' => ['id' => $from, 'first_name' => 'Prova', 'last_name' => 'Banco'], 'chat' => ['id' => $from, 'type' => 'private'], 'date' => time()] + $extra];
+  $calls = fn() => array_map(fn($l) => json_decode($l, true), is_file("$tgd/calls.jsonl") ? file("$tgd/calls.jsonl", FILE_IGNORE_NEW_LINES) : []);
+  $reply = function () use ($calls): string {
+    foreach (array_reverse($calls()) as $c) if ($c['method'] === 'sendMessage') return (string) ($c['params']['text'] ?? '');
+    return '';
+  };
+  $files = [];
+  $addFile = function (string $id, string $src) use ($tgd, &$files): void {
+    @mkdir("$tgd/files/photos", 0700, true);
+    copy($src, "$tgd/files/photos/$id.bin");
+    $files[$id] = ['path' => "photos/$id.bin", 'size' => filesize($src)];
+    file_put_contents("$tgd/files.json", json_encode($files));
+  };
+  $adm = fn(string $qs = '') => req('GET', '/gallery/admin/index.php' . ($qs !== '' ? "?$qs" : ''), ['auth' => true, 'session' => true])['body'];
+  $count = fn() => (int) q1("SELECT COUNT(*) FROM images");
+  $ME = 777001;
+
+  // --- webhook: solo con il segreto giusto
+  check('webhook senza segreto: 403', $tg($msg($ME, ['text' => 'ciao']), '')['code'] === 403);
+  check('  segreto sbagliato: 403; GET: 403', $tg($msg($ME, ['text' => 'ciao']), str_repeat('x', 48))['code'] === 403
+    && req('GET', '/gallery/api/telegram.php')['code'] === 403);
+  check('  nessuna risposta mandata a Telegram per richieste non firmate', !array_filter($calls(), fn($c) => $c['method'] === 'sendMessage'));
+
+  // --- pannello: stato, collegamento del webhook
+  $st = $adm('v=strumenti');
+  check('Strumenti: bot riconosciuto, webhook non collegato, API col solo token', str_contains($st, '@banco_gallery_bot')
+    && str_contains($st, 'Webhook <b>non collegato</b>') && str_contains($st, "L'API risponde con il solo token"));
+  admin_post(['act' => 'tg_webhook', 'on' => '1'], 'strumenti');
+  $w = json_decode((string) @file_get_contents("$tgd/webhook.json"), true) ?: [];
+  check('Collega il webhook: indirizzo, segreto, solo messaggi', ($w['url'] ?? '') === $C['base'] . '/gallery/api/telegram.php'
+    && ($w['secret_token'] ?? '') === $secret && ($w['allowed_updates'] ?? []) === ['message'], json_encode($w));
+  check('  Strumenti lo mostra collegato', str_contains($adm('v=strumenti'), 'Webhook collegato'));
+
+  // --- sconosciuti e collegamento con codice
+  $n0 = $count();
+  $tg($msg($ME, ['photo' => [['file_id' => 'nessuno', 'file_size' => 10]]]));
+  check('utente non collegato: risposta con le istruzioni, niente caricato', str_contains($reply(), '/collega CODICE') && $count() === $n0);
+  admin_post(['act' => 'tg_pair'], 'strumenti');
+  $st = $adm('v=strumenti');
+  check('codice di collegamento: mostrato una volta', (bool) preg_match('~/collega ([A-Z2-9]{8})</code>~', $st, $m) && !str_contains($adm('v=strumenti'), '/collega ' . $m[1]));
+  $code = $m[1] ?? '';
+  $tg($msg($ME, ['text' => '/collega SBAGLIAT']));
+  check('  codice sbagliato: rifiutato', str_contains($reply(), 'Codice non valido') && !q1("SELECT 1 FROM telegram_users WHERE tg_id=?", [$ME]));
+  $tg($msg($ME, ['text' => '/collega ' . strtolower($code)]));
+  check('  codice giusto (anche minuscolo): collegato', str_contains($reply(), 'Collegato') && q1("SELECT name FROM telegram_users WHERE tg_id=?", [$ME]) === 'Prova Banco');
+  $tg($msg(777002, ['text' => "/collega $code"]));
+  check('  monouso: un secondo utente con lo stesso codice no', str_contains($reply(), 'Codice non valido') && !q1("SELECT 1 FROM telegram_users WHERE tg_id=777002"));
+  admin_post(['act' => 'tg_pair'], 'strumenti');
+  preg_match('~/collega ([A-Z2-9]{8})</code>~', $adm('v=strumenti'), $m2);
+  db_bench()->exec("UPDATE settings SET v = substr(v, 1, instr(v, ':')) || '" . (time() - 1) . "' WHERE k='tg_pair'");
+  $tg($msg(777003, ['text' => '/collega ' . ($m2[1] ?? '')]));
+  check('  codice scaduto: rifiutato', str_contains($reply(), 'Codice non valido') && !q1("SELECT 1 FROM telegram_users WHERE tg_id=777003"));
+  check('  Strumenti elenca chi è collegato', str_contains($adm('v=strumenti'), 'Prova Banco <span class="note">id 777001'));
+
+  // --- foto
+  $addFile('foto1', make_img('tgfoto', 640, 480, 'jpg'));
+  $addFile('foto1s', make_img('tgfotos', 90, 67, 'jpg'));
+  $n0 = $count();
+  $tg($msg($ME, ['photo' => [['file_id' => 'foto1s', 'file_size' => 900], ['file_id' => 'foto1', 'file_size' => 9000]], 'caption' => 'Tramonto dal molo']));
+  $new = db_bench()->query("SELECT * FROM images ORDER BY id DESC LIMIT 1")->fetch();
+  check('foto: caricata (la misura più grande) nell\'album Telegram, didascalia come titolo', $count() === $n0 + 1 && $new['folder'] === 'Telegram'
+    && $new['title'] === 'Tramonto dal molo' && (int) $new['width'] === 640, json_encode([$new['folder'] ?? null, $new['title'] ?? null, $new['width'] ?? null]));
+  check('  risposta: il link', $reply() === $C['base'] . '/gallery/i/' . $new['short'], $reply());
+  check('  file leggibile dal backup (non 0600 come un temporaneo)', (fileperms("$WWW/uploads/{$new['filename']}") & 0044) === 0044
+    && req('GET', "/gallery/i/{$new['short']}")['code'] === 200);
+  $tg($msg($ME, ['photo' => [['file_id' => 'foto1', 'file_size' => 9000]]]));
+  check('  la stessa foto di nuovo: link esistente, nessun doppione', $count() === $n0 + 1 && str_contains($reply(), 'già in archivio') && str_contains($reply(), $new['short']));
+  $gps = "$TMP/tg-gps.jpg";
+  file_put_contents($gps, fx_jpeg(500, 400, 1, true, true));
+  $addFile('doc1', $gps);
+  $tg($msg($ME, ['document' => ['file_id' => 'doc1', 'mime_type' => 'image/jpeg', 'file_size' => filesize($gps), 'file_name' => 'scatto.jpg']]));
+  $doc = db_bench()->query("SELECT * FROM images ORDER BY id DESC LIMIT 1")->fetch();
+  check('immagine come file (originale): posizione GPS tolta, e lo dice', $count() === $n0 + 2 && !has_location("$WWW/uploads/{$doc['filename']}", 'image/jpeg')
+    && str_contains($reply(), 'posizione GPS tolta'));
+  $tg($msg($ME, ['document' => ['file_id' => 'pdf1', 'mime_type' => 'application/pdf', 'file_size' => 1000]]));
+  check('un PDF: «mandami un\'immagine», niente caricato', str_contains($reply(), "Mandami un'immagine") && $count() === $n0 + 2);
+  $tg($msg($ME, ['photo' => [['file_id' => 'grande', 'file_size' => 30 * 1048576]]]));
+  check('troppo grande: rifiutata prima di scaricarla', str_starts_with($reply(), 'Troppo grande') && !array_filter($calls(), fn($c) => ($c['params']['file_id'] ?? '') === 'grande'));
+  $tg($msg($ME, ['photo' => [['file_id' => 'sparito', 'file_size' => 100]]]));
+  check('file che Telegram non trova: «non riesco a scaricare»', str_contains($reply(), 'Non riesco a scaricare'));
+  file_put_contents("$TMP/finto.jpg", 'non sono un JPEG');
+  $addFile('rotto', "$TMP/finto.jpg");
+  $tg($msg($ME, ['photo' => [['file_id' => 'rotto', 'file_size' => 16]]]));
+  check('file che non è un\'immagine: «non caricata» con il motivo', str_starts_with($reply(), 'Non caricata: unsupported mime') && $count() === $n0 + 2, $reply());
+  $tg($msg($ME, ['text' => 'ciao']));
+  check('un messaggio di testo: le istruzioni', str_contains($reply(), 'Mandami una foto'));
+  check('nessuna risposta contiene il token del bot', !array_filter($calls(), fn($c) => str_contains(json_encode($c['params'] ?? []), $C['tg_token'])));
+
+  // --- scollegare
+  admin_post(['act' => 'tg_user_remove', 'tg_id' => (string) $ME], 'strumenti');
+  $tg($msg($ME, ['photo' => [['file_id' => 'foto1', 'file_size' => 9000]]]));
+  check('utente scollegato: torna a ricevere le istruzioni', str_contains($reply(), '/collega CODICE'));
+  admin_post(['act' => 'tg_webhook', 'on' => '0'], 'strumenti');
+  check('Scollega il webhook', !is_file("$tgd/webhook.json"));
+  $sec = file_get_contents("$WWW/secret.php");
+  file_put_contents("$WWW/secret.php", preg_replace("~\n\s*'TELEGRAM_BOT_TOKEN'[^\n]*~", '', $sec));
+  check('senza token del bot: webhook 503, Strumenti spiega come accenderlo', $tg($msg($ME, ['text' => 'x']))['code'] === 503
+    && str_contains($adm('v=strumenti'), '@BotFather'));
+  file_put_contents("$WWW/secret.php", $sec);
+
+  // --- ShareX: il file scaricato, usato come lo userebbe ShareX
+  check('configurazioni: solo dietro login', req('GET', '/gallery/admin/tools.php?f=sharex')['code'] === 401);
+  $r = req('GET', '/gallery/admin/tools.php?f=sharex&album=Desktop', ['auth' => true]);
+  $sx = json_decode($r['body'], true);
+  check('ShareX (.sxcu): indirizzo, token in intestazione, campo img, album', ($sx['RequestURL'] ?? '') === $C['base'] . '/gallery/api/upload.php'
+    && ($sx['Headers']['X-Api-Token'] ?? '') === $C['token'] && ($sx['FileFormName'] ?? '') === 'img' && ($sx['Arguments']['folder'] ?? '') === 'Desktop'
+    && ($sx['URL'] ?? '') === '{json:url}' && str_contains($r['h']['content-disposition'] ?? '', 'Gallery.sxcu') && ($r['h']['cache-control'] ?? '') === 'no-store');
+  $h = []; foreach ($sx['Headers'] ?? [] as $k => $v) $h[] = "$k: $v";
+  $up = req('POST', '/gallery/api/upload.php', ['headers' => $h, 'post' => ['img' => new CURLFile(make_img('sharex', 222, 111, 'png'), 'image/png', 'Screenshot.png')] + ($sx['Arguments'] ?? [])]);
+  $uj = json_decode($up['body'], true);
+  check('  caricamento come ShareX (solo token, niente password): link e cancellazione', $up['code'] === 200 && str_starts_with($uj['url'] ?? '', $C['base'] . '/gallery/i/')
+    && isset($uj['thumb'], $uj['delete']) && row($uj['id'])['folder'] === 'Desktop', substr($up['body'], 0, 100));
+
+  // --- Flameshot: lo script scaricato, con flameshot e gli appunti finti
+  $r = req('GET', '/gallery/admin/tools.php?f=flameshot&album=Desktop', ['auth' => true]);
+  $sh = "$TMP/gallery-screenshot.sh";
+  file_put_contents($sh, $r['body']);
+  exec('bash -n ' . escapeshellarg($sh) . ' 2>&1', $o, $rc);
+  check('Flameshot: script valido, con indirizzo e token', $rc === 0 && str_contains($r['body'], $C['base'] . '/gallery/api/upload.php') && str_contains($r['body'], $C['token']));
+  $bin = "$TMP/finti-bin"; @mkdir($bin);
+  $png = make_img('flameshot', 321, 123, 'png');
+  file_put_contents("$bin/flameshot", "#!/bin/sh\n[ \"\$FINTO_ESC\" = 1 ] && exit 1\ncat " . escapeshellarg($png) . "\n");
+  file_put_contents("$bin/xclip", "#!/bin/sh\ncat > " . escapeshellarg("$TMP/appunti.txt") . "\n");
+  file_put_contents("$bin/notify-send", "#!/bin/sh\nexit 0\n");
+  array_map(fn($f) => chmod("$bin/$f", 0755), ['flameshot', 'xclip', 'notify-send']);
+  @unlink("$TMP/appunti.txt");
+  $env = 'env -u WAYLAND_DISPLAY PATH=' . escapeshellarg("$bin:" . getenv('PATH')) . ' ';
+  exec($env . 'bash ' . escapeshellarg($sh) . ' 2>&1', $o2, $rc);
+  $clip = (string) @file_get_contents("$TMP/appunti.txt");
+  check('  cattura → caricamento → link negli appunti', $rc === 0 && str_starts_with($clip, $C['base'] . '/gallery/i/')
+    && row(basename($clip))['folder'] === 'Desktop', "rc=$rc " . implode(' ', $o2));
+  $n0 = $count();
+  exec($env . 'FINTO_ESC=1 bash ' . escapeshellarg($sh) . ' 2>&1', $o3, $rc);
+  check('  cattura annullata (Esc): esce senza caricare nulla', $rc === 0 && $count() === $n0);
 });
 
 /* ======================================================================= */

@@ -491,10 +491,112 @@ function snippet_attr(array $r): string {
 }
 
 /* Il componente "copia": pulsante nel formato in uso + tutti gli altri.
- * I pulsanti li riempie il JavaScript del tema. */
+ * I pulsanti li riempie il JavaScript del tema. Un'immagine privata non ha
+ * indirizzi pubblici: al loro posto, il rimando ai link a scadenza. */
 function snippet_box(array $r, string $label = 'link &amp; embed'): string {
+  if (!empty($r['private'])) {
+    return '<div class="snip snip-private" data-private="' . htmlspecialchars((string) $r['short'], ENT_QUOTES) . '">'
+         . '<span class="use priv">privata</span> nessun indirizzo pubblico: si condivide con un link a scadenza</div>';
+  }
   return '<div class="snip" ' . snippet_attr($r) . '>'
        . '<button type="button" class="snip-copy" data-snip-copy>copia</button>'
        . '<details><summary>' . $label . '</summary><div class="copies" data-snip-all></div></details>'
        . '</div>';
+}
+
+/* Indirizzi per le pagine dietro login (galleria, pannello): le immagini
+ * private o nel cestino, che /i/ non serve, passano da view.php. */
+function ui_hidden(array $r): bool {
+  return !empty($r['private']) || ($r['deleted_at'] ?? null) !== null;
+}
+function ui_thumb_url(array $r): string {
+  global $BASE_URL;
+  return $BASE_URL . '/' . (ui_hidden($r) ? 'view.php' : 'i.php') . '?c=' . $r['short'] . '&thumb=1&v=' . thumb_version((string) $r['filename']);
+}
+function ui_full_url(array $r): string {
+  global $BASE_URL;
+  return ui_hidden($r) ? $BASE_URL . '/view.php?c=' . $r['short'] : $BASE_URL . '/i/' . $r['short'];
+}
+
+/* ---------------------------------------------------------------------------
+ * Consegna: originale, miniatura o versione ridotta, con le intestazioni
+ * ------------------------------------------------------------------------- */
+
+/* Manda l'immagine $r (filename, mime, width) e termina la richiesta.
+ * $cache: 'public' (i.php: originale immutabile, miniature e ridotte
+ * immutabili solo con ?v=), 'private' (view.php, dietro login), oppure un
+ * intero: i secondi che restano a un link a scadenza (nessuna cache oltre). */
+function send_image(array $r, bool $wantThumb, int $wantW, $cache = 'public'): void {
+  global $USE_THUMBS;
+  $fname = $r['filename'];
+  $mime  = $r['mime'];
+  $full_path  = upload_path($fname);
+  $thumb_path = thumb_path($fname);
+  if (!is_file($full_path)) { http_response_code(404); exit; }
+
+  $serve_path = $full_path;
+  $serve_mime = $mime;
+  $serve_name = $fname;
+  $fallback   = false;     // chiesta una versione ridotta, servito l'originale per ripiego
+
+  // Miniatura: se manca prova a generarla, altrimenti l'originale
+  if ($wantThumb && $USE_THUMBS) {
+    if (!is_file($thumb_path)) make_thumb($full_path, $thumb_path, $mime);
+    if (is_file($thumb_path)) $serve_path = $thumb_path;
+  }
+
+  // Versione ridotta: ?w=640 -> WebP, prodotta una volta e poi servita dal
+  // disco. Larghezze ammesse e regole in derived_width().
+  $dw = $wantThumb ? 0 : derived_width($wantW, (int) $r['width'], $mime);
+  if ($dw > 0) {
+    $dpath = derived_path($fname, $dw);
+    if (!is_file($dpath)) make_derived($full_path, $dpath, $mime, $dw);
+    if (is_file($dpath)) {
+      $serve_path = $dpath;
+      $serve_mime = 'image/webp';
+      $serve_name = pathinfo($fname, PATHINFO_FILENAME) . '.w' . $dw . '.webp';
+    } else {
+      $fallback = true;    // GD occupato o in errore: per ora l'originale
+    }
+  }
+
+  header("Content-Type: " . $serve_mime);
+  header('Content-Disposition: inline; filename="' . preg_replace('~[^A-Za-z0-9._-]~', '', $serve_name) . '"');
+  header("X-Content-Type-Options: nosniff");
+
+  if ($cache === 'public') {
+    // endpoint pubblico per hotlink: consente l'embed cross-origin
+    header("Cross-Origin-Resource-Policy: cross-origin");
+    header("Access-Control-Allow-Origin: *");
+    // L'originale non cambia mai per un dato codice: un anno, immutabile.
+    // Miniature e versioni ridotte si possono rigenerare: immutabili solo se
+    // l'indirizzo porta una versione (?v=), altrimenti un giorno. Il ripiego
+    // sull'originale al posto di una versione ridotta: un minuto.
+    if ($fallback) header("Cache-Control: public, max-age=60");
+    elseif ($serve_path === $full_path || get_str('v') !== '') header("Cache-Control: public, max-age=31536000, immutable");
+    else header("Cache-Control: public, max-age=86400");
+  } elseif ($cache === 'private') {
+    header("Cross-Origin-Resource-Policy: same-origin");
+    header("Cache-Control: private, max-age=3600");
+  } else {
+    // link a scadenza: chi lo apre puo' incollarlo altrove (anteprime di
+    // Telegram, forum), ma nessuna cache deve tenerlo oltre la scadenza
+    header("Cross-Origin-Resource-Policy: cross-origin");
+    header("Cache-Control: private, max-age=" . max(0, min((int) $cache, 3600)));
+    header("X-Robots-Tag: noindex, nofollow");
+  }
+
+  // ETag/Last-Modified per cache efficiente
+  $mtime = @filemtime($serve_path) ?: time();
+  $etag  = '"' . sha1($serve_path . '|' . $mtime . '|' . filesize($serve_path)) . '"';
+  header("ETag: " . $etag);
+  header("Last-Modified: " . gmdate("D, d M Y H:i:s", $mtime) . " GMT");
+  if (isset($_SERVER['HTTP_IF_NONE_MATCH']) && trim($_SERVER['HTTP_IF_NONE_MATCH']) === $etag) {
+    http_response_code(304);
+    exit;
+  }
+
+  header("Content-Length: " . filesize($serve_path));
+  readfile($serve_path);
+  exit;
 }

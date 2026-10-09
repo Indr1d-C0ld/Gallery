@@ -4,20 +4,24 @@ require_once __DIR__ . "/../_theme.php";
 require_once __DIR__ . "/../_images.php";
 require_once __DIR__ . "/../_archive.php";
 require_once __DIR__ . "/../_stats.php";
+require_once __DIR__ . "/../_api.php";
+require_once __DIR__ . "/../_telegram.php";
 
 require_login();
 csrf_token();
 
-/* Viste: foglio di lavoro (default), album, etichette, cruscotto, cestino */
-$VIEWS = ['' => 'Foglio di lavoro', 'album' => 'Album', 'etichette' => 'Etichette', 'cruscotto' => 'Cruscotto', 'cestino' => 'Cestino'];
+/* Viste: foglio di lavoro (default), album, etichette, link a scadenza,
+ * cruscotto, strumenti (API, screenshot, Telegram), cestino */
+$VIEWS = ['' => 'Foglio di lavoro', 'album' => 'Album', 'etichette' => 'Etichette', 'link' => 'Link',
+          'cruscotto' => 'Cruscotto', 'strumenti' => 'Strumenti', 'cestino' => 'Cestino'];
 $view  = get_str('v');
 if (!isset($VIEWS[$view])) $view = '';
 
 function flash(string $msg): void { $_SESSION['flash'] = $msg; }
 /* "1 immagine spostata" / "3 immagini spostate" */
 function imgs(int $n, string $one, string $many): string { return $n === 1 ? "1 immagine $one" : "$n immagini $many"; }
-function back(array $keep): void {
-  header("Location: index.php?" . http_build_query(array_filter($keep, fn($v) => $v !== '' && $v !== null)), true, 303);
+function back(array $keep, string $anchor = ''): void {
+  header("Location: index.php?" . http_build_query(array_filter($keep, fn($v) => $v !== '' && $v !== null)) . $anchor, true, 303);
   exit;
 }
 function h(?string $s): string { return htmlspecialchars((string) $s, ENT_QUOTES); }
@@ -84,6 +88,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       case 'trash':
         if (hold_if_in_use($ids, ['act' => 'bulk', 'op' => 'trash', 'ids' => $ids], 'Sposta comunque nel cestino')) back($keep);
         $n = trash_images($ids); flash(imgs($n, 'spostata', 'spostate') . " nel cestino"); break;
+      case 'private':     // come il cestino per chi ha incollato il link: stesso avviso
+        if (hold_if_in_use($ids, ['act' => 'bulk', 'op' => 'private', 'ids' => $ids], 'Rendi comunque private')) back($keep);
+        $n = set_private($ids, true); flash(imgs($n, 'resa privata', 'rese private')); break;
+      case 'public':
+        $n = set_private($ids, false); flash(imgs($n, 'resa pubblica', 'rese pubbliche')); break;
       default:      flash("Azione sconosciuta");
     }
 
@@ -114,12 +123,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         : ($res === 'renamed' ? ($to === '' ? "Le immagini di «{$from}» ora sono senza album" : "Album «{$from}» rinominato in «{$to}»")
         : "Nessun cambiamento"));
 
+  } elseif ($act === 'private') {
+    $on = post_str('on') === '1';
+    if ($on && hold_if_in_use([$short], ['act' => 'private', 'short' => $short, 'on' => '1'], 'Rendi comunque privata')) back($keep);
+    $n = set_private([$short], $on);
+    flash($n ? ($on ? "$short ora è privata: /i/ e /t/ rispondono 404, si condivide con un link a scadenza" : "$short di nuovo pubblica") : "Nessun cambiamento");
+
+  } elseif ($act === 'share') {
+    $sec = (int) post_str('dur');
+    $s = isset(SHARE_DURATIONS[$sec]) ? share_create($short, $sec) : null;
+    if ($s) $_SESSION['shared'] = $s; else flash("Link non creato (immagine nel cestino o durata non valida)");
+
+  } elseif ($act === 'share_revoke') {
+    flash(share_revoke(post_str('token')) ? "Link revocato: da adesso risponde 404" : "Link non trovato o già revocato");
+
+  } elseif ($act === 'tg_webhook') {
+    $on = post_str('on') === '1';
+    $r = $on ? tg_call('setWebhook', ['url' => tg_webhook_url(), 'secret_token' => tg_secret(),
+                                       'allowed_updates' => ['message'], 'drop_pending_updates' => true])
+             : tg_call('deleteWebhook', ['drop_pending_updates' => true]);
+    flash(!empty($r['ok']) ? ($on ? "Webhook collegato: " . tg_webhook_url() : "Webhook scollegato: il bot non riceve più nulla")
+                           : "Telegram ha risposto con un errore: " . tg_mask((string) ($r['description'] ?? '?')));
+
+  } elseif ($act === 'tg_pair') {
+    $_SESSION['tg_code'] = tg_pair_new();
+
+  } elseif ($act === 'tg_user_remove') {
+    flash(tg_user_remove((int) post_str('tg_id')) ? "Utente scollegato dal bot" : "Utente non trovato");
+
   } elseif ($act === 'tag_rename') {
     $from = post_str('from'); $res = tag_rename($from, post_str('to'));
     flash(['renamed' => "Etichetta rinominata", 'merged' => "Etichette unite", 'deleted' => "Etichetta «{$from}» eliminata", 'none' => "Etichetta non trovata"][$res]);
   }
 
-  back($keep);
+  // le azioni sul bot tornano alla sua scheda (il codice compare li')
+  back($keep, str_starts_with($act, 'tg_') ? '#telegram' : '');
 }
 
 /* =====================  GET  ===================== */
@@ -132,9 +170,12 @@ $since  = $stats['since'] ? date('d/m/Y', strtotime($stats['since'])) : '';
 // per le immagini ancora richieste (un post che le mostra rotte): restano
 // finche' non le elimini tu, segnalate nel cestino
 $auto = purge_trash(time() - TRASH_DAYS * 86400, array_map('strval', array_keys($use30)));
-$flash = $_SESSION['flash'] ?? '';
-$hold  = $_SESSION['hold'] ?? null;
-unset($_SESSION['flash'], $_SESSION['hold']);
+shares_purge(30);                 // link scaduti o revocati da oltre 30 giorni
+$flash  = $_SESSION['flash'] ?? '';
+$hold   = $_SESSION['hold'] ?? null;
+$shared = $_SESSION['shared'] ?? null;
+$tgCode = $_SESSION['tg_code'] ?? null;
+unset($_SESSION['flash'], $_SESSION['hold'], $_SESSION['shared'], $_SESSION['tg_code']);
 if ($auto) $flash = trim($flash . " · Eliminate definitivamente: " . imgs($auto, 'rimasta', 'rimaste') . " nel cestino oltre " . TRASH_DAYS . " giorni", ' ·');
 
 $q    = substr(preg_replace('~\s+~', ' ', trim(get_str('q'))), 0, 80);
@@ -158,6 +199,11 @@ if ($view === '' || $view === 'cestino') {
   $sub = count($albumNames) . ' album';
 } elseif ($view === 'cruscotto') {
   $sub = 'cruscotto';
+} elseif ($view === 'link') {
+  $links = shares_list();
+  $sub = count(array_filter($links, fn($l) => $l['state'] === 'attivo')) . ' link attivi';
+} elseif ($view === 'strumenti') {
+  $sub = 'strumenti';
 } else {
   $tags = tag_list();
   $sub = count($tags) . ' etichette';
@@ -237,6 +283,15 @@ theme_head('Gallery · Admin', $sub . ' · utente ' . (current_user() ?? '?'));
 </div>
 <?php endif; ?>
 
+<?php if ($shared): /* link a scadenza appena creato */ ?>
+<div class="flash sharebox">Link a scadenza per <code><?= h($shared['short']) ?></code>, valido fino al
+  <?= h(date('d/m/Y H:i', $shared['expires_at'])) ?> (<?= h(time_left($shared['expires_at'])) ?>):<br>
+  <code class="sharelink"><?= h($shared['url']) ?></code>
+  <button type="button" class="ghost" data-copy="<?= h($shared['url']) ?>">copia</button>
+  <span class="note">Funziona anche se l'immagine è privata; dopo la scadenza risponde 410. Si revoca dalla vista Link.</span>
+</div>
+<?php endif; ?>
+
 <?php if ($view === '' || $view === 'cruscotto'): /* stato delle statistiche d'uso */ ?>
   <?php if (!$stats['exists']): ?>
     <p class="note">Statistiche d'uso non ancora disponibili: le prepara ogni notte <code>stats_update.php</code>
@@ -281,6 +336,8 @@ theme_head('Gallery · Admin', $sub . ' · utente ' . (current_user() ?? '?'));
     <option value="move">sposta nell'album</option>
     <option value="tag">aggiungi l'etichetta</option>
     <option value="untag">togli l'etichetta</option>
+    <option value="private">rendi private</option>
+    <option value="public">rendi pubbliche</option>
     <option value="trash">sposta nel cestino</option>
   </select>
   <input type="text" name="value" data-bulk-value list="albums" placeholder="album (vuoto: senza album)">
@@ -291,11 +348,12 @@ theme_head('Gallery · Admin', $sub . ' · utente ' . (current_user() ?? '?'));
 <table class="ws">
 <tr><th><input type="checkbox" data-bulk-all aria-label="Seleziona tutte"></th><th>Provino</th><th>Short / data / uso</th><th>Album · titolo · alt · etichette</th><th>Link &amp; embed</th><th>Azioni</th></tr>
 <?php foreach ($rows as $r):
-  $full  = $B . "/i/" . $r['short'];
-  $tb    = $B . "/i.php?c=" . $r['short'] . "&thumb=1&v=" . thumb_version($r['filename']);
+  $full  = ui_full_url($r);
+  $tb    = ui_thumb_url($r);
   $dim   = ($r['width'] && $r['height']) ? "{$r['width']}×{$r['height']}" : "?";
   $sh    = htmlspecialchars($r['short']);
   $note  = $inUse[$r['short']] ?? null;
+  $priv  = !empty($r['private']);
 ?>
 <tr>
   <td><input type="checkbox" name="ids[]" value="<?= $sh ?>" form="bulk" data-bulk-item aria-label="Seleziona <?= $sh ?>"<?= $note ? ' data-in-use="' . h($note) . '"' : '' ?>></td>
@@ -304,6 +362,7 @@ theme_head('Gallery · Admin', $sub . ' · utente ' . (current_user() ?? '?'));
 
   <td><code><?= $sh ?></code><br>
       <span style="color:var(--muted)"><?= date('Y-m-d H:i', $r['created_at']) ?></span>
+      <?php if ($priv): ?><br><span class="use priv" title="/i/ e /t/ rispondono 404: si condivide con un link a scadenza">privata</span><?php endif; ?>
       <?php if ($stats['ok']): ?><br><?= use_badge($r['short'], $use30, $useAll, $since) ?><?php endif; ?></td>
 
   <td>
@@ -327,6 +386,18 @@ theme_head('Gallery · Admin', $sub . ' · utente ' . (current_user() ?? '?'));
         <input type="hidden" name="act" value="retthumb">
         <input type="hidden" name="short" value="<?= $sh ?>">
         <button type="submit" class="ghost">Rigenera thumb</button>
+      </form>
+      <form method="post" class="share-form"><?= csrf_field() ?>
+        <input type="hidden" name="act" value="share"><input type="hidden" name="short" value="<?= $sh ?>">
+        <select name="dur" aria-label="Durata del link per <?= $sh ?>">
+          <?php foreach (SHARE_DURATIONS as $sec => $lbl): ?><option value="<?= $sec ?>" <?= $sec === 86400 ? 'selected' : '' ?>><?= $lbl ?></option><?php endforeach; ?>
+        </select>
+        <button type="submit" class="ghost" title="Link che smette di funzionare alla scadenza, anche per un'immagine privata">Link a scadenza</button>
+      </form>
+      <form method="post"<?= !$priv && $note ? ' data-confirm="' . h("«{$r['short']}» è ancora in uso: $note.\n\nRenderla privata rompe i link già incollati. Procedere?") . '"' : '' ?>><?= csrf_field() ?>
+        <input type="hidden" name="act" value="private"><input type="hidden" name="short" value="<?= $sh ?>">
+        <input type="hidden" name="on" value="<?= $priv ? '0' : '1' ?>"><input type="hidden" name="in_use_ok" value="0">
+        <button type="submit" class="ghost"><?= $priv ? 'Rendi pubblica' : 'Rendi privata' ?></button>
       </form>
       <form method="post"<?= $note ? ' data-confirm="' . h("«{$r['short']}» è ancora in uso: $note.\n\nSpostarla comunque nel cestino?") . '"' : '' ?>><?= csrf_field() ?>
         <input type="hidden" name="act" value="delete">
@@ -430,7 +501,7 @@ theme_head('Gallery · Admin', $sub . ' · utente ' . (current_user() ?? '?'));
   $info = [];                                     // righe delle immagini citate
   if ($top || $missing) {
     $want = array_values(array_unique(array_merge(array_map('strval', array_keys($top)), array_map('strval', array_keys($missing)))));
-    $st = db()->prepare("SELECT short, filename, mime, title, COALESCE(folder,'') AS folder, deleted_at FROM images WHERE short IN (" . in_list($want) . ")");
+    $st = db()->prepare("SELECT short, filename, mime, title, COALESCE(folder,'') AS folder, deleted_at, private FROM images WHERE short IN (" . in_list($want) . ")");
     $st->execute($want);
     foreach ($st->fetchAll() as $r) $info[$r['short']] = $r;
   }
@@ -467,7 +538,7 @@ theme_head('Gallery · Admin', $sub . ' · utente ' . (current_user() ?? '?'));
       <tr><th></th><th>Immagine</th><th>Da dove</th><th class="num">Viste</th><th></th></tr>
       <?php foreach ($top as $s => $u): $s = (string) $s; $im = $info[$s] ?? null; ?>
       <tr>
-        <td><?php if ($im && $im['deleted_at'] === null): ?><a href="<?= h("$B/i/$s") ?>" target="_blank" rel="noopener"><img src="<?= h("$B/i.php?c=$s&thumb=1&v=" . thumb_version($im['filename'])) ?>" alt=""></a><?php endif; ?></td>
+        <td><?php if ($im): ?><a href="<?= h(ui_full_url($im)) ?>" target="_blank" rel="noopener"><img src="<?= h(ui_thumb_url($im)) ?>" alt=""></a><?php endif; ?></td>
         <td><a href="<?= view_url(['q' => "id:$s"]) ?>"><code><?= h($s) ?></code></a><br>
           <span style="color:var(--muted)"><?= $im ? h(($im['folder'] === '' ? 'senza album' : $im['folder']) . ($im['title'] ? ' · ' . $im['title'] : '')) : 'non più nell\'archivio' ?></span></td>
         <td class="lbl"><?= h(implode(', ', array_map(fn($l, $n) => "$l ($n)", array_keys(array_slice($u['by'], 0, 3, true)), array_slice($u['by'], 0, 3, true)))) . (count($u['by']) > 3 ? ', …' : '') ?></td>
@@ -565,6 +636,138 @@ theme_head('Gallery · Admin', $sub . ' · utente ' . (current_user() ?? '?'));
   </section>
 </div>
 
+<?php elseif ($view === 'link'): /* ===================== LINK A SCADENZA ===================== */ ?>
+
+<p class="note">Un link a scadenza (<code>/i/TOKEN</code>) mostra l'immagine anche se è privata, fino alla scadenza;
+  poi risponde 410. Si crea dal foglio di lavoro; revocarlo lo spegne subito. Quelli scaduti o revocati da oltre 30 giorni spariscono.</p>
+<?php if (!$links): ?><p class="note">Nessun link, per ora.</p><?php else: ?>
+<div class="tbl-scroll">
+<table class="ws">
+<tr><th>Provino</th><th>Immagine</th><th>Link</th><th>Scadenza</th><th>Azioni</th></tr>
+<?php foreach ($links as $l): $act = $l['state'] === 'attivo'; ?>
+<tr>
+  <td><img src="<?= h(ui_thumb_url($l)) ?>" alt="" class="cover-thumb"></td>
+  <td><code><?= h($l['short']) ?></code><?= !empty($l['private']) ? ' <span class="use priv">privata</span>' : '' ?><br>
+      <span style="color:var(--muted)"><?= h(($l['folder'] === '' ? 'senza album' : $l['folder']) . ($l['title'] ? ' · ' . $l['title'] : '')) ?></span></td>
+  <td><code class="sharelink"><?= h($l['url']) ?></code><?php if ($act): ?><br><button type="button" class="ghost" data-copy="<?= h($l['url']) ?>">copia</button><?php endif; ?></td>
+  <td><?= h(date('d/m/Y H:i', (int) $l['expires_at'])) ?><br>
+      <span class="use <?= $act ? 'on' : 'off' ?>"><?= h($l['state']) ?><?= $act ? ' · ' . h(time_left((int) $l['expires_at'])) : '' ?></span></td>
+  <td><?php if ($act || $l['state'] === 'nel cestino'): ?>
+    <form method="post" data-confirm="Revocare il link? Chi lo ha ricevuto vedrà un'immagine mancante."><?= csrf_field() ?>
+      <input type="hidden" name="act" value="share_revoke"><input type="hidden" name="token" value="<?= h($l['token']) ?>">
+      <button type="submit" class="danger">Revoca</button>
+    </form><?php endif; ?></td>
+</tr>
+<?php endforeach; ?>
+</table>
+</div>
+<?php endif; ?>
+
+<?php elseif ($view === 'strumenti'): /* ===================== STRUMENTI ===================== */
+  $apiOk  = api_token_ok();
+  $apache = api_apache_state();
+  $tgOn   = tg_enabled();
+  $me = $tgOn ? tg_call('getMe', [], 5) : [];
+  $wh = $tgOn ? tg_call('getWebhookInfo', [], 5) : [];
+  $whUrl = (string) ($wh['result']['url'] ?? '');
+  $tgUsers = tg_users();
+?>
+<div class="dash">
+  <section class="card wide">
+    <h2>API</h2>
+    <?php if (!$apiOk): ?>
+      <div class="warnbox">API disattivata: in <code>secret.php</code> manca un <code>API_TOKEN</code> robusto
+        (<code>php -r 'echo bin2hex(random_bytes(24));'</code>).</div>
+    <?php elseif ($apache === 'basic'): ?>
+      <div class="warnbox">Apache chiede ancora la password su <code>/gallery/api/</code>: ShareX, Flameshot e Telegram non
+        possono usare il solo token. Una volta, da root: <code>sudo bash <?= h(dirname(__DIR__)) ?>/apply_root_tasks.sh --yes</code></div>
+    <?php elseif ($apache === 'token'): ?>
+      <p class="note">✓ L'API risponde con il solo token, senza password di Apache.</p>
+    <?php else: ?>
+      <p class="note">Non sono riuscito a verificare come Apache tratta <code>/gallery/api/</code> (controllo dal server verso se stesso).</p>
+    <?php endif; ?>
+    <p class="note">Il token va nell'intestazione <code>X-Api-Token</code>, mai nell'indirizzo (finirebbe nei log). È in
+      <code>secret.php</code>; i file scaricati qui sotto lo contengono già: trattali come una password.</p>
+    <div class="tbl-scroll"><table class="dt">
+      <tr><th>Richiesta</th><th>Cosa fa</th></tr>
+      <tr><td><code>POST <?= h($B) ?>/api/upload.php</code></td><td>carica: campo <code>img</code>; facoltativi <code>folder</code>, <code>title</code>, <code>alt</code>, <code>private=1</code></td></tr>
+      <tr><td><code>GET <?= h($B) ?>/api/images.php?q=&amp;folder=&amp;tag=&amp;page=&amp;per=</code></td><td>elenco e ricerca (stessa sintassi della galleria); <code>trash=1</code> il cestino, <code>private=1</code> le private</td></tr>
+      <tr><td><code>GET <?= h($B) ?>/api/image.php?c=CODICE</code></td><td>dettaglio: etichette, uso negli ultimi <?= USAGE_DAYS ?> giorni, link a scadenza</td></tr>
+      <tr><td><code>POST …/api/image.php?c=CODICE</code> <code>action=update</code></td><td><code>title</code>, <code>alt</code>, <code>folder</code>, <code>tags</code>, <code>private</code></td></tr>
+      <tr><td><code>DELETE …/api/image.php?c=CODICE</code></td><td>nel cestino; se è in uso risponde 409, <code>force=1</code> per farlo comunque. <code>action=restore</code> la ripristina</td></tr>
+      <tr><td><code>POST …/api/image.php?c=CODICE</code> <code>action=share</code></td><td>link a scadenza: <code>seconds</code> (da 60 secondi a 90 giorni); <code>action=unshare</code> + <code>token</code> lo revoca</td></tr>
+    </table></div>
+    <pre class="code">curl -H "X-Api-Token: $TOKEN" -F img=@foto.jpg -F folder=Blog <?= h($B) ?>/api/upload.php
+curl -H "X-Api-Token: $TOKEN" "<?= h($B) ?>/api/images.php?q=tag:forum"</pre>
+  </section>
+
+  <section class="card">
+    <h2>Screenshot dal desktop</h2>
+    <?php if (!$apiOk): ?><p class="note">Servono un token API (vedi sopra).</p><?php else: ?>
+    <form method="get" action="tools.php" class="mini" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <label class="note" style="margin:0">album <input type="text" name="album" value="Screenshot" list="albums" style="width:140px"></label>
+      <button type="submit" name="f" value="sharex">ShareX (.sxcu)</button>
+      <button type="submit" name="f" value="flameshot">Flameshot (script)</button>
+    </form>
+    <p class="note"><b>ShareX</b> (Windows): doppio clic sul file scaricato, poi Destinazioni → Caricamento immagini → Uploader
+      personalizzato. Dopo la cattura il link è già negli appunti.</p>
+    <p class="note"><b>Flameshot</b> (Linux): <code>chmod 700 gallery-screenshot.sh</code> e assegnalo a una scorciatoia (es. Stamp).
+      Selezioni l'area, il link finisce negli appunti (<code>wl-copy</code>, <code>xclip</code> o <code>xsel</code>);
+      <code>--full</code> cattura tutto lo schermo.</p>
+    <?php endif; ?>
+  </section>
+
+  <section class="card" id="telegram">
+    <h2>Telegram</h2>
+    <?php if (!$tgOn): ?>
+      <p class="note">Il bot è spento. Per accenderlo:</p>
+      <ol class="note">
+        <li>su Telegram scrivi a <b>@BotFather</b>: <code>/newbot</code>, scegli nome e username, copia il token;</li>
+        <li>aggiungilo a <code>secret.php</code>: <code>'TELEGRAM_BOT_TOKEN' => '123456:ABC…',</code>;</li>
+        <li>torna qui: «Collega il webhook», poi genera il codice e mandalo al bot.</li>
+      </ol>
+    <?php else: ?>
+      <p class="note">Bot: <b><?= !empty($me['ok']) ? '@' . h((string) ($me['result']['username'] ?? '?')) : 'non raggiungibile — ' . h(tg_mask((string) ($me['description'] ?? '?'))) ?></b>
+        · album «<?= h($TELEGRAM_ALBUM) ?>»</p>
+      <?php if ($whUrl === tg_webhook_url()): ?>
+        <p class="note">✓ Webhook collegato<?= !empty($wh['result']['pending_update_count']) ? ' · in coda: ' . (int) $wh['result']['pending_update_count'] : '' ?></p>
+        <?php if (!empty($wh['result']['last_error_message'])): ?>
+          <div class="warnbox">Ultimo errore di consegna (<?= h(date('d/m H:i', (int) ($wh['result']['last_error_date'] ?? 0))) ?>):
+            <?= h((string) $wh['result']['last_error_message']) ?></div>
+        <?php endif; ?>
+      <?php else: ?>
+        <p class="note">Webhook <b>non collegato</b><?= $whUrl !== '' ? ' (punta altrove: ' . h($whUrl) . ')' : '' ?>.</p>
+      <?php endif; ?>
+      <?php if ($apache === 'basic'): ?><div class="warnbox">Finché Apache chiede la password su <code>/gallery/api/</code>, Telegram non può consegnare i messaggi (vedi API).</div><?php endif; ?>
+      <form method="post" style="display:inline"><?= csrf_field() ?>
+        <input type="hidden" name="act" value="tg_webhook"><input type="hidden" name="on" value="1">
+        <button type="submit"><?= $whUrl === tg_webhook_url() ? 'Ricollega il webhook' : 'Collega il webhook' ?></button></form>
+      <?php if ($whUrl !== ''): ?><form method="post" style="display:inline"><?= csrf_field() ?>
+        <input type="hidden" name="act" value="tg_webhook"><input type="hidden" name="on" value="0">
+        <button type="submit" class="ghost">Scollega</button></form><?php endif; ?>
+
+      <h2 style="margin-top:16px">Chi può mandare foto</h2>
+      <?php if ($tgCode): ?>
+        <div class="flash">Manda al bot: <code class="sharelink">/collega <?= h($tgCode) ?></code>
+          <button type="button" class="ghost" data-copy="/collega <?= h($tgCode) ?>">copia</button>
+          <span class="note">valido <?= intdiv(TG_PAIR_TTL, 60) ?> minuti, una volta sola</span></div>
+      <?php endif; ?>
+      <?php if (!$tgUsers): ?><p class="note">Nessuno: genera un codice e mandalo al bot dal tuo account Telegram.</p><?php else: ?>
+      <table class="dt">
+        <?php foreach ($tgUsers as $tu): ?>
+        <tr><td><?= h($tu['name'] !== '' ? $tu['name'] : 'senza nome') ?> <span class="note">id <?= (int) $tu['tg_id'] ?> · dal <?= h(date('d/m/Y', (int) $tu['added_at'])) ?></span></td>
+          <td class="num"><form method="post" data-confirm="Scollegare <?= h($tu['name']) ?> dal bot?"><?= csrf_field() ?>
+            <input type="hidden" name="act" value="tg_user_remove"><input type="hidden" name="tg_id" value="<?= (int) $tu['tg_id'] ?>">
+            <button type="submit" class="ghost">Scollega</button></form></td></tr>
+        <?php endforeach; ?>
+      </table>
+      <?php endif; ?>
+      <form method="post"><?= csrf_field() ?><input type="hidden" name="act" value="tg_pair">
+        <button type="submit" class="ghost">Genera un codice di collegamento</button></form>
+    <?php endif; ?>
+  </section>
+</div>
+
 <?php elseif ($view === 'album'): /* ===================== ALBUM ===================== */ ?>
 
 <p class="note">Rinominare un album con il nome di uno che esiste già li unisce. Le linguette della galleria
@@ -579,7 +782,7 @@ theme_head('Gallery · Admin', $sub . ' · utente ' . (current_user() ?? '?'));
   $imgs = db()->prepare("SELECT short, title FROM images WHERE COALESCE(folder,'')=? AND deleted_at IS NULL ORDER BY created_at DESC");
   $imgs->execute([$a['name']]); ?>
 <tr>
-  <td><?php if ($cov): ?><img class="cover-thumb" src="<?= htmlspecialchars($B . '/i.php?c=' . $cov['short'] . '&thumb=1&v=' . thumb_version($cov['filename'])) ?>" alt=""><?php endif; ?></td>
+  <td><?php if ($cov): ?><img class="cover-thumb" src="<?= htmlspecialchars(ui_thumb_url($cov)) ?>" alt=""><?php endif; ?></td>
   <td><b><?= $nm ?></b><br><span style="color:var(--muted)"><?= (int) $a['n'] ?> immagini</span><br>
       <a href="<?= htmlspecialchars($B . '/?f=' . rawurlencode($a['name'])) ?>">↗ in galleria</a></td>
   <td>
@@ -649,10 +852,10 @@ document.addEventListener('DOMContentLoaded', function () {
       if (exists) msg = 'L\'album «' + to + '» esiste già: unire «' + from + '» a «' + to + '»?';
       else if (to === '') msg = 'Togliere l\'album: le immagini di «' + from + '» resteranno senza album?';
     }
-    if (f.hasAttribute('data-bulk') && f.elements.op.value === 'trash') {
+    if (f.hasAttribute('data-bulk') && (f.elements.op.value === 'trash' || f.elements.op.value === 'private')) {
       var sel = [].slice.call(document.querySelectorAll('[data-bulk-item]:checked'));
       var busy = sel.filter(function (c) { return c.hasAttribute('data-in-use'); });
-      msg = 'Spostare nel cestino ' + (sel.length === 1 ? '1 immagine?' : sel.length + ' immagini?');
+      msg = (f.elements.op.value === 'trash' ? 'Spostare nel cestino ' : 'Rendere private ') + (sel.length === 1 ? '1 immagine?' : sel.length + ' immagini?');
       if (busy.length) {
         msg += '\n\nAttenzione, ' + (busy.length === 1 ? 'una è ancora in uso' : busy.length + ' sono ancora in uso') + ':\n'
           + busy.slice(0, 8).map(function (c) { return '• ' + c.value + ': ' + c.getAttribute('data-in-use'); }).join('\n')
@@ -664,13 +867,21 @@ document.addEventListener('DOMContentLoaded', function () {
     if (f.elements.in_use_ok) f.elements.in_use_ok.value = '1';   // l'avviso e' stato letto e confermato
   });
 
+  // pulsanti "copia" (link a scadenza, codice del bot)
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-copy]');
+    if (!b || !window.gallerySnip) return;
+    gallerySnip.copy(b.getAttribute('data-copy')).then(function () { b.textContent = 'copiato ✓'; },
+                                                          function () { b.textContent = 'copia a mano'; });
+  });
+
   // selezione multipla
   var bar = document.querySelector('[data-bulk]');
   if (!bar) return;
   var all = document.querySelector('[data-bulk-all]'), count = bar.querySelector('[data-bulk-count]');
   var go = bar.querySelector('[data-bulk-go]'), op = bar.querySelector('[data-bulk-op]'), val = bar.querySelector('[data-bulk-value]');
   var items = [].slice.call(document.querySelectorAll('[data-bulk-item]'));
-  var HINT = { move: 'album (vuoto: senza album)', tag: 'etichetta da aggiungere', untag: 'etichetta da togliere', trash: '' };
+  var HINT = { move: 'album (vuoto: senza album)', tag: 'etichetta da aggiungere', untag: 'etichetta da togliere', trash: '', 'private': '', 'public': '' };
   function refresh() {
     var n = items.filter(function (c) { return c.checked; }).length;
     count.textContent = n ? n + (n === 1 ? ' selezionata' : ' selezionate') : 'nessuna selezionata';
@@ -680,7 +891,7 @@ document.addEventListener('DOMContentLoaded', function () {
     bar.classList.toggle('on', n > 0);
   }
   function setOp() {
-    val.hidden = op.value === 'trash';
+    val.hidden = !HINT[op.value];
     val.placeholder = HINT[op.value];
     if (op.value === 'move') val.setAttribute('list', 'albums'); else val.removeAttribute('list');
     refresh();

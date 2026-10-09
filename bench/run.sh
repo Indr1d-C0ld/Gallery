@@ -82,12 +82,13 @@ case "$BENCH" in "$DATA"|"$DATA"/*|"$CODE"|"$CODE"/*) die "il banco non puo' sta
 [ -z "$(ls -A "$BENCH")" ] || die "la cartella del banco non e' vuota: $BENCH"
 
 SERVER_PID=""
+TG_PID=""
 cleanup() {
   # il server ha i suoi processi figli (worker): si ferma l'intero gruppo
-  if [ -n "$SERVER_PID" ]; then
-    kill -- "-$SERVER_PID" 2>/dev/null || kill "$SERVER_PID" 2>/dev/null || true
-    wait "$SERVER_PID" 2>/dev/null || true
-  fi
+  for pid in $SERVER_PID $TG_PID; do
+    kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
   if [ "$KEEP" -eq 1 ]; then
     echo "banco conservato: $BENCH  (contiene copie delle immagini: rm -rf quando hai finito)"
   else
@@ -99,7 +100,7 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM      # cosi' anche Ctrl+C e kill passano da cleanup
 
 say "banco: $BENCH"
-mkdir -p "$BENCH/www/gallery" "$BENCH/db" "$BENCH/tools" "$BENCH/log" "$BENCH/sessions" "$BENCH/tmp" "$BENCH/apache"
+mkdir -p "$BENCH/www/gallery" "$BENCH/db" "$BENCH/tools" "$BENCH/log" "$BENCH/sessions" "$BENCH/tmp" "$BENCH/apache" "$BENCH/tgmock/files"
 
 # codice: tutto tranne .claude e i dati
 rsync -a --no-owner --no-group --exclude='.claude' --exclude='_orig_backup_*' --exclude='/secret.php' \
@@ -112,12 +113,15 @@ sqlite3 "file:$REAL_DB?immutable=1" "VACUUM INTO '$BENCH/db/gallery.db'"
 # statistiche d'uso: il job le sostituisce con rename(), quindi il file e' sempre intero
 mkdir -p "$BENCH/www/gallery/stats"
 [ -z "$STATS_SRC" ] || cp "$STATS_SRC" "$BENCH/www/gallery/stats/stats.db"
-cp "$HERE/router.php" "$HERE/tests.php" "$BENCH/tools/"
+cp "$HERE/router.php" "$HERE/tests.php" "$HERE/tgmock.php" "$BENCH/tools/"
 
 # porta libera e credenziali usa-e-getta
 PORT="$(php -r '$s = stream_socket_server("tcp://127.0.0.1:0"); echo explode(":", stream_socket_get_name($s, false))[1];')"
 PASS="$(php -r 'echo bin2hex(random_bytes(12));')"
 TOKEN="$(php -r 'echo bin2hex(random_bytes(24));')"
+# Telegram finto (bench/tgmock.php): il bot del banco non parla mai con api.telegram.org
+TG_PORT="$(php -r '$s = stream_socket_server("tcp://127.0.0.1:0"); echo explode(":", stream_socket_get_name($s, false))[1];')"
+TG_TOKEN="424242:$(php -r 'echo bin2hex(random_bytes(12));')"
 
 # secret.php del banco (quello reale non viene copiato: punta al DB vero)
 cat > "$BENCH/www/gallery/secret.php" <<PHP
@@ -129,6 +133,8 @@ return [
     'DB_PATH'       => '$BENCH/db/gallery.db',
     'STATS_DB'      => '$BENCH/www/gallery/stats/stats.db',
     'ACCESS_LOGS'   => '$BENCH/apache/access.log*',
+    'TELEGRAM_BOT_TOKEN' => '$TG_TOKEN',
+    'TELEGRAM_API'  => 'http://127.0.0.1:$TG_PORT',
 ];
 PHP
 
@@ -137,6 +143,7 @@ cat > "$BENCH/tools/bench.json" <<JSON
  "base":"http://127.0.0.1:$PORT","user":"bench","pass":"$PASS","token":"$TOKEN",
  "log":"$BENCH/log/php_errors.log","real_db":"$REAL_DB","real_data":"$DATA",
  "stats_db":"$BENCH/www/gallery/stats/stats.db","apache":"$BENCH/apache","stats_copied":$( [ -n "$STATS_SRC" ] && echo true || echo false ),
+ "tg_token":"$TG_TOKEN","tg_api":"http://127.0.0.1:$TG_PORT","tg_dir":"$BENCH/tgmock",
  "autologin":$( [ "$SERVE" -eq 1 ] && echo true || echo false )}
 JSON
 
@@ -151,7 +158,8 @@ while read -r p; do
 done <<< "$EFFECTIVE"
 [ -z "$(find "$BENCH" -type l)" ] || die "link simbolici nel banco: $(find "$BENCH" -type l | head -3)"
 grep -q "$REAL_DB" "$BENCH/www/gallery/secret.php" && die "secret.php del banco punta al DB reale"
-echo "  ok  nessun link simbolico, secret.php del banco"
+grep -q "api.telegram.org" "$BENCH/www/gallery/secret.php" && die "secret.php del banco punta a Telegram vero"
+echo "  ok  nessun link simbolico, secret.php del banco (Telegram finto su 127.0.0.1:$TG_PORT)"
 
 # --- Server --------------------------------------------------------------------
 # Limiti uguali a quelli di Apache (php.ini apache2), sessioni e temporanei nel banco.
@@ -164,6 +172,9 @@ PHP_CLI_SERVER_WORKERS=4 setsid php -d opcache.enable=0 \
   -d session.save_path="$BENCH/sessions" -d upload_tmp_dir="$BENCH/tmp" -d sys_temp_dir="$BENCH/tmp" \
   -S "127.0.0.1:$PORT" -t "$BENCH/www" "$BENCH/tools/router.php" >"$BENCH/log/server.log" 2>&1 &
 SERVER_PID=$!
+TGMOCK_DIR="$BENCH/tgmock" TGMOCK_TOKEN="$TG_TOKEN" setsid php -d opcache.enable=0 -d display_errors=0 \
+  -S "127.0.0.1:$TG_PORT" "$BENCH/tools/tgmock.php" >"$BENCH/log/tgmock.log" 2>&1 &
+TG_PID=$!
 for _ in $(seq 50); do
   curl -s -o /dev/null "http://127.0.0.1:$PORT/gallery/i.php" && break
   sleep 0.1

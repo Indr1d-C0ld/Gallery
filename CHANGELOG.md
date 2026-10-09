@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-10-09 (6) — Collegarla al resto del server: API completa, private, link a scadenza, screenshot, Telegram
+
+**Migrazione 5.** `images.private`, tabelle `shares`, `telegram_users`,
+`settings`.
+
+**API completa.** Il token si manda solo nell'intestazione `X-Api-Token`:
+`?token=` non è più accettato. `api/images.php` serve elenco e ricerca;
+`api/image.php` dettaglio (uso, link), `update`, `trash`/DELETE, `restore`,
+`share`, `unshare`. Cestinare o rendere privata un'immagine in uso risponde
+409 (`force=1` per farlo comunque). La nuova `gallery.conf` toglie la Basic
+Auth ai soli quattro script di `api/`: ognuno verifica il suo token.
+
+**Immagini private e link a scadenza.** Un'immagine privata risponde 404 su
+`/i/` e `/t/`; il pannello la mostra tramite `view.php`, dietro login. I link
+`/i/TOKEN` valgono anche per le private, durano da 60 secondi a 90 giorni e
+si revocano; scaduti rispondono 410. La cache non va mai oltre la scadenza.
+Nuova vista «Link» nel pannello.
+
+**Screenshot dal desktop.** Il pannello (Strumenti) offre una
+configurazione ShareX (`.sxcu`) e uno script per Flameshot, con il token già
+dentro: cattura, carica, link negli appunti.
+
+**Bot Telegram.** Webhook (`api/telegram.php`), senza demone: una foto
+mandata al bot finisce nell'album «Telegram» e torna come link, con la
+posizione GPS tolta e i doppioni riconosciuti. Ci si collega con un codice
+monouso generato nel pannello; il segreto del webhook è un HMAC del token.
+
+**Un solo ingresso.** `_ingest.php` (upload e bot) e `send_image()`
+(`i.php`, `view.php`, link a scadenza).
+
 ## 2026-10-09 (5) — Sapere dove sono usate: statistiche dai log, avviso prima di eliminare, cruscotto
 
 **Statistiche d'uso.** `stats_update.php`, ogni notte da cron con un utente

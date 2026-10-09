@@ -145,6 +145,39 @@ function gallery_migrations(): array {
       }
     }],
 
+    /* v5 — immagini private, link a scadenza, bot Telegram (Tranche 5).
+     * - images.private: 1 = /i/ e /t/ rispondono 404 come per il cestino;
+     *   la si vede dal pannello (view.php) o con un link a scadenza.
+     * - shares: link a scadenza, /i/TOKEN e /t/TOKEN. Il token e' lungo 22
+     *   caratteri, i codici delle immagini 10: non si confondono. Nessun
+     *   contatore: il percorso pubblico non scrive (le viste le contano le
+     *   statistiche dai log).
+     * - telegram_users: chi puo' mandare foto al bot (collegato con un codice
+     *   generato nel pannello).
+     * - settings: piccoli valori dell'app (codice di collegamento del bot). */
+    5 => ['immagini private, link a scadenza, utenti del bot Telegram', function (PDO $pdo): void {
+      $cols = array_column($pdo->query("PRAGMA table_info(images)")->fetchAll(PDO::FETCH_ASSOC), 'name');
+      if (!in_array('private', $cols, true)) $pdo->exec("ALTER TABLE images ADD COLUMN private INTEGER NOT NULL DEFAULT 0");
+      $pdo->exec("CREATE TABLE IF NOT EXISTS shares (
+        token      TEXT PRIMARY KEY,
+        image_id   INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        revoked_at INTEGER,
+        note       TEXT NOT NULL DEFAULT ''
+      )");
+      $pdo->exec("CREATE INDEX IF NOT EXISTS idx_shares_image ON shares(image_id)");
+      $pdo->exec("CREATE TABLE IF NOT EXISTS telegram_users (
+        tg_id    INTEGER PRIMARY KEY,
+        name     TEXT NOT NULL DEFAULT '',
+        added_at INTEGER NOT NULL
+      )");
+      $pdo->exec("CREATE TABLE IF NOT EXISTS settings (
+        k TEXT PRIMARY KEY,
+        v TEXT NOT NULL
+      )");
+    }],
+
   ];
 }
 

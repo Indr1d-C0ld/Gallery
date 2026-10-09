@@ -20,8 +20,10 @@ function bench_route() {
   if ($path === '/__bench/config') return '__config__';
   if (!str_starts_with($path, '/gallery/')) return 404;
 
-  // Auth: come il RequireAny di gallery.conf
-  $public = (bool) preg_match('#^/gallery/(i\.php$|i/[A-Za-z0-9_-]+$|t/[A-Za-z0-9_-]+$)#', $path);
+  // Auth: come il RequireAny di gallery.conf (con la regola della Tranche 5:
+  // gli script dell'API si aprono con il loro token, senza password)
+  $public = (bool) preg_match('#^/gallery/(i\.php$|i/[A-Za-z0-9_-]+$|t/[A-Za-z0-9_-]+$)#', $path)
+         || (bool) preg_match('#^/gallery/api/(upload|images|image|telegram)\.php$#', $path);
   $authed = ($_SERVER['PHP_AUTH_USER'] ?? null) === $cfg['user']
          && hash_equals($cfg['pass'], (string) ($_SERVER['PHP_AUTH_PW'] ?? ''));
   // run.sh --serve: banco da provare a mano nel browser, gia' "autenticato"
@@ -36,7 +38,7 @@ function bench_route() {
   // File e cartelle che Apache nega
   if (preg_match('#^/gallery/(bench(/|$)|stats(/|$)|_orig_backup_|(.*/)?\.)#', $path)) return 404;
   if (preg_match('#\.(db|db-wal|db-shm|sqlite|sql|md|log|bak|sh)$#', $path)) return 403;
-  if (preg_match('#/(secret|_theme|_images|_migrations|_archive|_stats|config)\.php$#', $path)) return 403;
+  if (preg_match('#/(secret|_theme|_images|_migrations|_archive|_stats|_ingest|_api|_telegram|config)\.php$#', $path)) return 403;
   if (preg_match('#^/gallery/(uploads|thumbs)/.*\.(php|phtml|phar)$#', $path)) return 403;
 
   // Riscritture

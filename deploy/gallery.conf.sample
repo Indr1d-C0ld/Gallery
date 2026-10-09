@@ -1,6 +1,10 @@
 # /etc/apache2/conf-available/gallery.conf
 # Revisione 2026-09: l'endpoint immagini (i.php, /i/, /t/) è pubblico per
 # consentire l'hotlink da forum/siti esterni; tutto il resto resta dietro Basic Auth.
+# Tranche 5 (2026-10): anche gli script dell'API sono fuori dalla Basic Auth,
+# perche' ShareX, Flameshot e il webhook di Telegram non hanno la password:
+# ognuno verifica da se' il suo token in intestazione (X-Api-Token, oppure
+# X-Telegram-Bot-Api-Secret-Token). Solo questi quattro file, per nome.
 
 <Directory /var/www/html/gallery>
     Options -Indexes -MultiViews
@@ -16,8 +20,10 @@
     AuthUserFile /etc/apache2/.htpasswd-gallery
 
     <RequireAny>
-        # pubblico: solo la consegna delle immagini
+        # pubblico: la consegna delle immagini (anche i link a scadenza /i/TOKEN)
         Require expr %{REQUEST_URI} =~ m#^/gallery/(i\.php$|i/[A-Za-z0-9_-]+$|t/[A-Za-z0-9_-]+$)#
+        # API: niente password, ogni script chiede il suo token in intestazione
+        Require expr %{REQUEST_URI} =~ m#^/gallery/api/(upload|images|image|telegram)\.php$#
         # tutto il resto: credenziali
         Require valid-user
     </RequireAny>

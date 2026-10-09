@@ -14,7 +14,9 @@
 #      allineato alla tabella images;
 #   4. nessun originale pubblicato con dati di posizione (GPS);
 #   5. statistiche d'uso: leggibili dal server web (non scrivibili), fresche,
-#      job notturno nel crontab, file mai serviti dal web.
+#      job notturno nel crontab, file mai serviti dal web;
+#   6. API (Tranche 5): senza token risponde l'app, non Apache; view.php e
+#      gli strumenti del pannello restano dietro la password.
 #
 #  Unico effetto collaterale, come per qualunque visitatore: la richiesta di
 #  prova a /i/CODICE?w=640 fa produrre (una volta) quella versione ridotta.
@@ -44,7 +46,7 @@ while [ $# -gt 0 ]; do
     --perms-only) PERMS_ONLY=1 ;;
     --web-user)   WEB_USER="${2:?}"; shift ;;
     --app)        APP="$(cd "${2:?}" && pwd)"; shift ;;
-    -h|--help)    sed -n '2,33p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,35p' "$0"; exit 0 ;;
     *) echo "opzione sconosciuta: $1" >&2; exit 2 ;;
   esac
   shift
@@ -206,13 +208,15 @@ CURL=(curl -sS -k --max-time 15 --resolve "$HOST:443:127.0.0.1")
 code() { "${CURL[@]}" -o /dev/null -w '%{http_code}' "https://$HOST$1" 2>/dev/null || echo 000; }
 
 for p in /gallery/ /gallery/admin/ /gallery/upload.php /gallery/api/upload.php /gallery/delete.php \
-         /gallery/regen_thumbs.php /gallery/_fpm_check.php /gallery/stats_update.php; do
+         /gallery/regen_thumbs.php /gallery/_fpm_check.php /gallery/stats_update.php /gallery/view.php \
+         /gallery/admin/tools.php; do
   c="$(code "$p")"; [ "$c" = 401 ] && ok "$p -> 401" || err "$p -> $c (atteso 401)"
 done
 for p in /gallery/secret.php /gallery/config.php /gallery/_migrations.php /gallery/_images.php /gallery/_archive.php \
          /gallery/schema.sql /gallery/CHANGES.md /gallery/.htaccess /gallery/apply_root_tasks.sh \
          /gallery/bench/run.sh /gallery/bench/tests.php /gallery/uploads/ /gallery/thumbs/ \
-         /gallery/_stats.php /gallery/stats/ /gallery/stats/stats.db /gallery/stats/update.log; do
+         /gallery/_stats.php /gallery/stats/ /gallery/stats/stats.db /gallery/stats/update.log \
+         /gallery/_api.php /gallery/_ingest.php /gallery/_telegram.php; do
   body="$("${CURL[@]}" -w '\n%{http_code}' "https://$HOST$p" 2>/dev/null)"; c="${body##*$'\n'}"
   if [[ "$c" =~ ^(401|403|404)$ ]] && ! grep -qE '<\?php|API_TOKEN|DB_PATH' <<< "$body"; then ok "$p -> $c"
   else err "$p -> $c (atteso 401/403/404 senza contenuto)"; fi
@@ -222,6 +226,17 @@ for kind in i t; do
   read -r c ct < <("${CURL[@]}" -o /dev/null -w '%{http_code} %{content_type}\n' "https://$HOST/gallery/$kind/$SHORT" 2>/dev/null || echo "000 -")
   [ "$c" = 200 ] && [[ "$ct" == image/* ]] && ok "/gallery/$kind/$SHORT -> 200 $ct" || err "/gallery/$kind/$SHORT -> $c $ct (atteso 200 image/*)"
 done
+# API: senza token deve rispondere l'app (401 in JSON), non Apache (401 Basic)
+if [ -f "$APP/_api.php" ]; then
+  hdr="$("${CURL[@]}" -o /dev/null -D - "https://$HOST/gallery/api/images.php" 2>/dev/null)"
+  c="$(awk 'NR==1{print $2}' <<< "$hdr")"
+  if grep -qi '^www-authenticate: *basic' <<< "$hdr"; then
+    warn "API ancora dietro la password di Apache: ShareX, Flameshot e Telegram non funzionano. Una volta: sudo bash $APP/apply_root_tasks.sh --yes"
+  elif [ "$c" = 401 ]; then ok "/gallery/api/images.php senza token -> 401 dall'app (basta il token)"
+  else err "/gallery/api/images.php senza token -> $c (atteso 401)"; fi
+  c="$("${CURL[@]}" -o /dev/null -w '%{http_code}' -X POST -d '{}' "https://$HOST/gallery/api/telegram.php" 2>/dev/null || echo 000)"
+  [[ "$c" =~ ^(401|403|503)$ ]] && ok "/gallery/api/telegram.php senza segreto -> $c" || err "/gallery/api/telegram.php senza segreto -> $c (atteso 401/403/503)"
+fi
 # versione ridotta: la query string deve passare l'accesso pubblico di Apache
 if [ "$LATEST" -ge 3 ] && [ -n "$(grep -l make_derived "$APP/_images.php" 2>/dev/null)" ]; then
   WIDE="$(SQ "SELECT short FROM images WHERE width > 640 AND mime <> 'image/gif' ORDER BY created_at DESC LIMIT 1")"

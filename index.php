@@ -139,7 +139,7 @@ theme_head('Gallery', $view === 'album'
   $href = '?f=' . rawurlencode($al['name']); ?>
   <a class="frame album-card" href="<?= htmlspecialchars($href) ?>">
     <?php if ($cov): ?><img class="shot" loading="lazy" decoding="async" alt=""
-      src="<?= htmlspecialchars($BASE_URL . '/i.php?c=' . $cov['short'] . '&thumb=1&v=' . thumb_version($cov['filename'])) ?>"><?php endif; ?>
+      src="<?= htmlspecialchars(ui_thumb_url($cov)) ?>"><?php endif; ?>
     <span class="cap">
       <span class="ttl"><?= htmlspecialchars($al['name']) ?></span>
       <span class="dim"><?= (int) $al['n'] ?> immagini</span>
@@ -156,11 +156,9 @@ theme_head('Gallery', $view === 'album'
 $n = $offset;
 foreach ($rows as $r):
   $n++;
-  $full  = $BASE_URL . "/i/" . $r['short'];
-  $thumb = $BASE_URL . "/i.php?c=" . $r['short'] . "&thumb=1";
-  $tfile = $THUMBS . "/" . $r['filename'];
-  $v     = is_file($tfile) ? (int)@filemtime($tfile) : 0;
-  $tb    = $thumb . "&v=" . $v;
+  // le private passano da view.php (dietro login): /i/ per loro risponde 404
+  $full  = ui_full_url($r);
+  $tb    = ui_thumb_url($r);
 
   $label = $r['title'] ?: $r['alt'] ?: '';
   $alttx = $r['alt'] ?: $r['title'] ?: $r['short'];
@@ -176,7 +174,7 @@ foreach ($rows as $r):
     <figcaption class="cap">
       <div class="row1"><span><?= sprintf('%03d', $n) ?></span><span><?= date('Y-m-d', $r['created_at']) ?></span></div>
       <div class="ttl"><?= htmlspecialchars($label) ?: '&nbsp;' ?></div>
-      <div class="dim"><?= htmlspecialchars($r['folder'] ?: 'root') ?><?= $meta ? ' · ' . htmlspecialchars($meta) : '' ?></div>
+      <div class="dim"><?= htmlspecialchars($r['folder'] ?: 'root') ?><?= $meta ? ' · ' . htmlspecialchars($meta) : '' ?><?= !empty($r['private']) ? ' · <span class="use priv">privata</span>' : '' ?></div>
       <?php if ($r['tags']): ?><div class="chips small"><?php foreach ($r['tags'] as $tg): ?><a class="chip" href="?tag=<?= urlencode($tg) ?>"><?= htmlspecialchars($tg) ?></a><?php endforeach; ?></div><?php endif; ?>
       <?= snippet_box($r, '· altri formati ·') ?>
     </figcaption>

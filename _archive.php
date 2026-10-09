@@ -309,7 +309,8 @@ function search_parse(string $q): array {
 
 /* Opzioni: q (testo), folder (null = tutti gli album, '' = senza album),
  * tag, page, per, trash (true = solo il cestino), only / except (liste di
- * codici: solo questi / tutti tranne questi; per il filtro sull'uso).
+ * codici: solo questi / tutti tranne questi; per il filtro sull'uso),
+ * private (true = solo le private, false = solo le pubbliche).
  * Risultato: rows (con 'tags'), total, page (corretta), pages, fts. */
 function gallery_search(array $o): array {
   $q     = substr(preg_replace('~\s+~', ' ', trim((string) ($o['q'] ?? ''))), 0, 120);
@@ -341,6 +342,7 @@ function gallery_search(array $o): array {
   // una lista JSON in un solo parametro: nessun limite al numero di codici
   if (isset($o['only']))   { $where[] = "i.short IN (SELECT value FROM json_each(?))";     $args[] = json_encode(array_values((array) $o['only'])); }
   if (isset($o['except'])) { $where[] = "i.short NOT IN (SELECT value FROM json_each(?))"; $args[] = json_encode(array_values((array) $o['except'])); }
+  if (isset($o['private'])) $where[] = $o['private'] ? 'i.private = 1' : 'i.private = 0';
   $w = implode(' AND ', $where);
 
   $cnt = db()->prepare("SELECT COUNT(*) FROM $from WHERE $w");
@@ -349,7 +351,7 @@ function gallery_search(array $o): array {
   $offset = page_offset($page, $total, $per);
 
   $st = db()->prepare("SELECT i.id, i.short, i.filename, i.mime, i.title, i.alt, i.width, i.height, i.size,
-      i.created_at, i.deleted_at, COALESCE(i.folder,'') AS folder
+      i.created_at, i.deleted_at, i.private, i.delkey, COALESCE(i.folder,'') AS folder
     FROM $from WHERE $w ORDER BY $order LIMIT $per OFFSET $offset");
   $st->execute($args);
   $rows = $st->fetchAll();
@@ -359,4 +361,87 @@ function gallery_search(array $o): array {
 
   return ['rows' => $rows, 'total' => $total, 'page' => $page,
           'pages' => max(1, (int) ceil($total / $per)), 'fts' => $useFts];
+}
+
+/* ---------------------------------------------------------------------------
+ * Immagini private e link a scadenza (Tranche 5)
+ * ------------------------------------------------------------------------- */
+
+/* Rende private (o di nuovo pubbliche) le immagini indicate. Privata: /i/ e
+ * /t/ rispondono 404, come per il cestino; si vede dal pannello o con un link
+ * a scadenza. */
+function set_private(array $shorts, bool $on): int {
+  $shorts = array_values(array_unique($shorts));
+  if (!$shorts) return 0;
+  $q = db()->prepare("UPDATE images SET private=? WHERE private<>? AND short IN (" . in_list($shorts) . ")");
+  $q->execute(array_merge([(int) $on, (int) $on], $shorts));
+  return $q->rowCount();
+}
+
+const SHARE_DURATIONS = [3600 => '1 ora', 86400 => '1 giorno', 604800 => '7 giorni', 2592000 => '30 giorni'];
+const SHARE_MAX_SECONDS = 90 * 86400;
+
+function share_url(string $token, bool $thumb = false): string {
+  global $BASE_URL;
+  return $BASE_URL . ($thumb ? '/t/' : '/i/') . $token;
+}
+
+/* Nuovo link a scadenza per un'immagine (anche privata; non per una nel
+ * cestino). 16 byte casuali = 22 caratteri: i codici delle immagini sono 10,
+ * quindi i.php non li confonde. Restituisce il link o null. */
+function share_create(string $short, int $seconds, string $note = ''): ?array {
+  $seconds = max(60, min($seconds, SHARE_MAX_SECONDS));
+  $q = db()->prepare("SELECT id FROM images WHERE short=? AND deleted_at IS NULL");
+  $q->execute([$short]);
+  $id = $q->fetchColumn();
+  if ($id === false) return null;
+  $token = rtrim(strtr(base64_encode(random_bytes(16)), '+/', '-_'), '=');
+  $now = time();
+  db()->prepare("INSERT INTO shares(token, image_id, created_at, expires_at, note) VALUES(?,?,?,?,?)")
+      ->execute([$token, $id, $now, $now + $seconds, mb_substr(trim($note), 0, 200)]);
+  return ['token' => $token, 'url' => share_url($token), 'thumb' => share_url($token, true),
+          'expires_at' => $now + $seconds, 'short' => $short];
+}
+
+/* Link, piu' recenti prima; $short per una sola immagine, $active per i soli
+ * validi. Ogni riga: token, url, scadenza, stato (attivo, scaduto, revocato)
+ * e i dati dell'immagine. */
+function shares_list(?string $short = null, bool $active = false, int $limit = 200): array {
+  $where = []; $args = [];
+  if ($short !== null) { $where[] = 'i.short = ?'; $args[] = $short; }
+  if ($active) { $where[] = 's.revoked_at IS NULL AND s.expires_at > ?'; $args[] = time(); }
+  $q = db()->prepare("SELECT s.token, s.created_at, s.expires_at, s.revoked_at, s.note,
+      i.short, i.filename, i.mime, i.title, i.private, i.deleted_at, COALESCE(i.folder,'') AS folder
+    FROM shares s JOIN images i ON i.id = s.image_id" . ($where ? ' WHERE ' . implode(' AND ', $where) : '') . "
+    ORDER BY s.created_at DESC LIMIT " . (int) $limit);
+  $q->execute($args);
+  $now = time();
+  return array_map(fn($r) => $r + [
+    'url'   => share_url($r['token']),
+    'state' => $r['revoked_at'] !== null ? 'revocato' : ((int) $r['expires_at'] <= $now ? 'scaduto' : ($r['deleted_at'] !== null ? 'nel cestino' : 'attivo')),
+  ], $q->fetchAll());
+}
+
+function share_revoke(string $token): bool {
+  $q = db()->prepare("UPDATE shares SET revoked_at=? WHERE token=? AND revoked_at IS NULL");
+  $q->execute([time(), $token]);
+  return $q->rowCount() > 0;
+}
+
+/* Via i link scaduti o revocati da piu' di $days giorni (all'apertura del pannello). */
+function shares_purge(int $days = 30): int {
+  $cut = time() - $days * 86400;
+  $q = db()->prepare("DELETE FROM shares WHERE (revoked_at IS NOT NULL AND revoked_at < ?) OR expires_at < ?");
+  $q->execute([$cut, $cut]);
+  return $q->rowCount();
+}
+
+/* "fra 3 ore", "fra 2 giorni", "scaduto da 5 minuti" */
+function time_left(int $ts): string {
+  $d = $ts - time();
+  $a = abs($d);
+  if ($a < 3600)        $t = max(1, intdiv($a, 60)) . ' min';
+  elseif ($a < 172800)  $t = intdiv($a, 3600) === 1 ? '1 ora' : intdiv($a, 3600) . ' ore';
+  else                  $t = intdiv($a, 86400) . ' giorni';
+  return $d > 0 ? "fra $t" : "da $t";
 }

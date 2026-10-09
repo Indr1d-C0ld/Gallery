@@ -1,7 +1,6 @@
 <?php
 require_once __DIR__ . "/config.php";
-require_once __DIR__ . "/_images.php";
-require_once __DIR__ . "/_archive.php";     // norm_folder()
+require_once __DIR__ . "/_ingest.php";      // controlli, posizione GPS, doppioni, salvataggio
 
 /* Chiamata via API con token (api/upload.php): salta login di sessione e CSRF,
    il token è già stato verificato. Altrimenti: richiede auth Apache + CSRF. */
@@ -31,7 +30,8 @@ function upload_fail(int $code, string $msg): void {
 function upload_done(array $row, bool $duplicate, bool $location_removed = false, bool $restored = false): void {
   global $JSON, $BASE_URL;
   if ($JSON) {
-    $out = ['ok' => true, 'duplicate' => $duplicate, 'restored' => $restored, 'location_removed' => $location_removed] + snippet_data($row);
+    $out = ['ok' => true, 'duplicate' => $duplicate, 'restored' => $restored, 'location_removed' => $location_removed,
+            'private' => !empty($row['private'])] + snippet_data($row);
     if (defined('GALLERY_API_CALL')) {
       $out['delete'] = $BASE_URL . '/delete.php?c=' . $row['short'] . '&k=' . $row['delkey'];
     }
@@ -66,145 +66,14 @@ if (!isset($f['error']) || $f['error'] !== UPLOAD_ERR_OK) {
   upload_fail(400, "upload error: $code ($msg)");
 }
 
-/* 2) Size */
-if (!isset($f['size']) || $f['size'] <= 0) {
-  upload_fail(400, "empty upload");
-}
-if ($f['size'] > $MAX_BYTES) {
-  upload_fail(400, "too large (max " . (int)$MAX_BYTES . " bytes)");
-}
-
-/* 3) MIME */
-$fi = finfo_open(FILEINFO_MIME_TYPE);
-$mime = finfo_file($fi, $f['tmp_name']);
-finfo_close($fi);
-
-if (!isset($ALLOWED[$mime])) {
-  upload_fail(415, "unsupported mime: " . $mime);
-}
-$ext = $ALLOWED[$mime];
-
-/* 3b) Dimensioni in pixel — PRIMA di qualunque decodifica.
- * getimagesize() legge solo l'intestazione: una "decompression bomb" (file
- * piccolo che dichiara decine di migliaia di pixel per lato) verrebbe
- * altrimenti espansa in RAM da GD fino a saturare la memoria della macchina.
- * Il controllo avviene sul file temporaneo: una bomba non tocca mai uploads/.
- */
-$gi = @getimagesize($f['tmp_name']);
-if (!is_array($gi) || ($gi[0] ?? 0) < 1 || ($gi[1] ?? 0) < 1) {
-  upload_fail(415, "immagine non leggibile o corrotta");
-}
-if ($gi[0] * $gi[1] > $MAX_PIXELS) {
-  upload_fail(413, sprintf(
-    "immagine troppo grande: %d×%d = %.1f megapixel (max %.0f)",
-    $gi[0], $gi[1], ($gi[0] * $gi[1]) / 1e6, $MAX_PIXELS / 1e6
-  ));
-}
-
-/* 3c) Dati di posizione: via dal file temporaneo, prima che diventi
- * pubblico. Le immagini di /i/ sono servite cosi' come sono a chiunque le
- * scarichi da un post: una foto da telefono porterebbe con se' le coordinate
- * di dove e' stata scattata. Si tolgono sul posto (stessi pixel); solo se la
- * posizione e' in una forma sconosciuta l'immagine viene risalvata senza
- * metadati, e se nemmeno questo basta il caricamento viene rifiutato. */
-$loc = strip_location($f['tmp_name'], $mime);
-if ($loc < 0) {
-  upload_fail(422, "l'immagine contiene dati di posizione che non si riescono a togliere: caricamento rifiutato");
-}
-if ($loc === 2) {
-  $gi = @getimagesize($f['tmp_name']) ?: $gi;   // risalvata: misure e orientamento nuovi
-}
-
-/* 3d) Misure come le mostra il browser: con orientamento EXIF da 5 a 8 la
- * foto e' salvata coricata, quindi larghezza e altezza vanno scambiate
- * (servono giuste negli snippet HTML, attributi width/height). */
-$w = (int)$gi[0];
-$h = (int)$gi[1];
-if (image_orientation($f['tmp_name'], $mime) >= 5) {
-  [$w, $h] = [$h, $w];
-}
-
-/* 4) Folder (cartella logica in DB) */
-$folder = norm_folder(post_str('folder'));
-
-/* 4b) Doppioni: la stessa immagine, byte per byte, e' gia' in archivio?
- * (L'impronta si calcola DOPO aver tolto la posizione: e' quella del file
- * davvero salvato, e lo stesso scatto ricaricato da' lo stesso risultato.)
- * Allora si restituisce quella invece di salvarne un secondo file: lo stesso
- * screenshot incollato due volte da' lo stesso link. Se l'immagine e' nel
- * cestino viene ripristinata, con i suoi indirizzi di prima. Fra piu' righe
- * con lo stesso file (solo in un DB precedente alla v4) si preferisce una
- * visibile, poi quella nello stesso album, poi la piu' vecchia. Se il DB
- * non risponde si prosegue: l'inserimento del punto 9 fallira' comunque in
- * modo pulito. */
-$sha = hash_file('sha256', $f['tmp_name']);
-$existing = null;
-try {
-  $q = db()->prepare("SELECT * FROM images WHERE sha256=? ORDER BY (deleted_at IS NULL) DESC, (COALESCE(folder,'')=?) DESC, id ASC");
-  $q->execute([$sha, $folder]);
-  foreach ($q->fetchAll() as $r) {
-    if (is_file(upload_path($r['filename']))) { $existing = $r; break; }
-  }
-} catch (Throwable $e) {
-  error_log('gallery upload: ricerca doppioni non riuscita — ' . $e->getMessage());
-}
-if ($existing) {
-  $restored = $existing['deleted_at'] !== null;
-  if ($restored) {
-    db()->prepare("UPDATE images SET deleted_at=NULL WHERE id=?")->execute([$existing['id']]);
-  }
-  upload_done($existing, true, $loc > 0, $restored);
-}
-
-/* 5) Genera identificativi */
-$short  = shortcode(7);
-$delkey = bin2hex(random_bytes(8));
-
-$fname = $short . "." . $ext;
-$dest  = upload_path($fname);
-
-/* 6) Salva file */
-if (!is_dir($UPLOADS)) {
-  @mkdir($UPLOADS, 0775, true);
-}
-if (!move_uploaded_file($f['tmp_name'], $dest)) {
-  upload_fail(500, "store failed");
-}
-
-/* 8) Thumbnail (se fallisce, i.php ritenta alla prima richiesta) */
-if ($USE_THUMBS) {
-  make_thumb($dest, thumb_path($fname), $mime);
-}
-
-/* 9) DB insert
- * Il file e' gia' su disco: se l'inserimento fallisce (disco pieno, DB
- * bloccato, collisione di short-code) senza questo blocco resterebbe un file
- * orfano — invisibile dall'interfaccia ma che occupa spazio per sempre.
- */
-$row = [
-  'short'      => $short,
-  'filename'   => $fname,
-  'mime'       => $mime,
-  'size'       => (int)filesize($dest),
-  'width'      => $w,
-  'height'     => $h,
-  'title'      => post_str('title') ?: null,
-  'alt'        => post_str('alt')   ?: null,
-  'delkey'     => $delkey,
-  'created_at' => time(),
-  'folder'     => $folder,
-  'sha256'     => $sha,
-];
-try {
-  db()->prepare("INSERT INTO images(" . implode(',', array_keys($row)) . ")
-                 VALUES(" . implode(',', array_fill(0, count($row), '?')) . ")")
-      ->execute(array_values($row));
-} catch (Throwable $e) {
-  @unlink($dest);                 // niente riga, niente file
-  @unlink(thumb_path($fname));    // e nemmeno la miniatura
-  error_log('gallery upload: insert fallito per ' . $fname . ' — ' . $e->getMessage());
-  upload_fail(500, "salvataggio non riuscito");
-}
-
-/* 10) Risposta */
-upload_done($row, false, $loc > 0);
+/* 2–10) Tutto il resto in _ingest.php: dimensione, tipo, pixel prima di
+ * decodificare, posizione GPS, misure, doppioni, file, miniatura, riga. */
+$res = ingest_image((string) $f['tmp_name'], [
+  'folder'   => post_str('folder'),
+  'title'    => post_str('title'),
+  'alt'      => post_str('alt'),
+  'private'  => post_str('private') === '1',
+  'uploaded' => true,
+]);
+if (!$res['ok']) upload_fail($res['code'], $res['error']);
+upload_done($res['row'], $res['duplicate'], $res['location_removed'], $res['restored']);
