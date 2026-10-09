@@ -262,13 +262,16 @@ function purge_images(array $shorts): int {
   return $n;
 }
 
-/* Svuota il cestino; con $olderThan solo cio' che vi e' entrato prima. */
-function purge_trash(?int $olderThan = null): int {
+/* Svuota il cestino; con $olderThan solo cio' che vi e' entrato prima;
+ * $keep: codici da non toccare (l'eliminazione automatica salta le immagini
+ * ancora richieste, vedi _stats.php). */
+function purge_trash(?int $olderThan = null, array $keep = []): int {
   $sql = "SELECT short FROM images WHERE deleted_at IS NOT NULL" . ($olderThan !== null ? " AND deleted_at < ?" : "");
   $q = db()->prepare($sql);
   $q->execute($olderThan !== null ? [$olderThan] : []);
+  $keep = array_flip(array_map('strval', $keep));
   $n = 0;
-  foreach ($q->fetchAll(PDO::FETCH_COLUMN) as $s) $n += (int) delete_image($s);
+  foreach ($q->fetchAll(PDO::FETCH_COLUMN) as $s) if (!isset($keep[$s])) $n += (int) delete_image($s);
   if ($n) tags_purge_orphans();
   return $n;
 }
@@ -305,7 +308,8 @@ function search_parse(string $q): array {
 }
 
 /* Opzioni: q (testo), folder (null = tutti gli album, '' = senza album),
- * tag, page, per, trash (true = solo il cestino).
+ * tag, page, per, trash (true = solo il cestino), only / except (liste di
+ * codici: solo questi / tutti tranne questi; per il filtro sull'uso).
  * Risultato: rows (con 'tags'), total, page (corretta), pages, fts. */
 function gallery_search(array $o): array {
   $q     = substr(preg_replace('~\s+~', ' ', trim((string) ($o['q'] ?? ''))), 0, 120);
@@ -334,6 +338,9 @@ function gallery_search(array $o): array {
     $where[] = "i.id IN (SELECT it.image_id FROM image_tags it JOIN tags t ON t.id = it.tag_id WHERE t.name = ? COLLATE NOCASE)";
     $args[] = $t;
   }
+  // una lista JSON in un solo parametro: nessun limite al numero di codici
+  if (isset($o['only']))   { $where[] = "i.short IN (SELECT value FROM json_each(?))";     $args[] = json_encode(array_values((array) $o['only'])); }
+  if (isset($o['except'])) { $where[] = "i.short NOT IN (SELECT value FROM json_each(?))"; $args[] = json_encode(array_values((array) $o['except'])); }
   $w = implode(' AND ', $where);
 
   $cnt = db()->prepare("SELECT COUNT(*) FROM $from WHERE $w");

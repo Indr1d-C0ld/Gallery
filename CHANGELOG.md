@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-10-09 (5) — Sapere dove sono usate: statistiche dai log, avviso prima di eliminare, cruscotto
+
+**Statistiche d'uso.** `stats_update.php`, ogni notte da cron con un utente
+che legge i log di Apache, conta le richieste di ogni immagine per giorno e
+provenienza. Le provenienze sono: pagine web (indirizzo senza sessioni,
+token, email, `utm_*`), senza provenienza, anteprime e servizi (Telegram,
+WhatsApp, Gmail, lettori RSS…), galleria/proprietario autenticato, bot.
+
+Le scrive in `stats/stats.db`, che il pannello legge in sola lettura: nessuna
+scrittura nel percorso pubblico delle immagini, nessun IP conservato.
+
+Per ogni giorno vince il conteggio più completo, quindi la rotazione dei log
+non accorcia lo storico. Lo script è idempotente, riconosce lo stesso log con
+due nomi, salta i log illeggibili e ricostruisce un file rovinato.
+
+**Avviso prima di eliminare.** Ogni immagine mostra le viste degli ultimi
+30 giorni, con un filtro «in uso / mai viste». Cestinare un'immagine in uso,
+o eliminare definitivamente un'immagine del cestino ancora richiesta, chiede
+conferma con il numero di viste e le provenienze. L'avviso c'è anche lato
+server, quindi funziona pure senza JavaScript. L'eliminazione automatica
+dopo 30 giorni salta le immagini ancora richieste.
+
+**Cruscotto.** Spazio occupato e per album, caricamenti per mese, immagini
+più viste, viste al giorno, provenienze, richieste a immagini che non ci sono
+più. Barre in CSS, senza librerie.
+
+**Ora locale.** Se `php.ini` non imposta `date.timezone`, `config.php` usa
+il fuso del sistema: i giorni coincidono con quelli dei log di Apache.
+
 ## 2026-10-08 (4) — Organizzare senza fatica: album, etichette, azioni multiple, cestino
 
 **Migrazione 4.** Tabelle `albums` (descrizione, copertina, posizione),

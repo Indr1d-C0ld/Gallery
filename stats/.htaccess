@@ -1,0 +1,3 @@
+# stats/ — statistiche d'uso (stats.db, update.log): le legge solo il pannello, da PHP.
+# Mai servite: anche .htaccess principale e gallery.conf le negano.
+Require all denied

@@ -17,8 +17,8 @@ Options -Indexes -MultiViews
 <FilesMatch "\.(db|db-wal|db-shm|sqlite|sql|md|log|bak|sh)$">
   Require all denied
 </FilesMatch>
-<FilesMatch "^(secret|_theme|_images|_migrations|_archive|config)\.php$">
-  # config.php, _theme.php, _images.php, _migrations.php e _archive.php sono include:
+<FilesMatch "^(secret|_theme|_images|_migrations|_archive|_stats|config)\.php$">
+  # config.php, _theme.php, _images.php, _migrations.php, _archive.php e _stats.php sono include:
   # nessun output utile se aperti, secret.php contiene i segreti.
   # Meglio negarli comunque.
   Require all denied
@@ -38,6 +38,9 @@ RedirectMatch 404 ^/gallery/_orig_backup_.*
 
 # --- Banco di prova: si usa solo da riga di comando (bench/run.sh) ---------
 RedirectMatch 404 ^/gallery/bench(/|$)
+
+# --- Statistiche d'uso: le legge solo il pannello, da PHP (stats_update.php) -
+RedirectMatch 404 ^/gallery/stats(/|$)
 
 # --- Header di sicurezza -------------------------------------------------
 <IfModule mod_headers.c>

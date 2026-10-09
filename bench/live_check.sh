@@ -12,7 +12,9 @@
 #      tranne la consegna delle immagini, che deve rispondere 200 image/*;
 #   3. schema del database alla stessa versione del codice, indice di ricerca
 #      allineato alla tabella images;
-#   4. nessun originale pubblicato con dati di posizione (GPS).
+#   4. nessun originale pubblicato con dati di posizione (GPS);
+#   5. statistiche d'uso: leggibili dal server web (non scrivibili), fresche,
+#      job notturno nel crontab, file mai serviti dal web.
 #
 #  Unico effetto collaterale, come per qualunque visitatore: la richiesta di
 #  prova a /i/CODICE?w=640 fa produrre (una volta) quella versione ridotta.
@@ -42,7 +44,7 @@ while [ $# -gt 0 ]; do
     --perms-only) PERMS_ONLY=1 ;;
     --web-user)   WEB_USER="${2:?}"; shift ;;
     --app)        APP="$(cd "${2:?}" && pwd)"; shift ;;
-    -h|--help)    sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,33p' "$0"; exit 0 ;;
     *) echo "opzione sconosciuta: $1" >&2; exit 2 ;;
   esac
   shift
@@ -100,7 +102,7 @@ PERMS="$(php -r '
     $isdir = is_dir($p);
     // .claude/ (impostazioni di Claude Code): il server web non deve leggerla,
     // ma soprattutto non deve poterla scrivere: gli hook girano come utente normale.
-    $needs_read = !str_starts_with($rel, ".claude") && ($isdir || preg_match("~\.(php|sql|htaccess)$|/\.htaccess$|^\.htaccess$~", $rel));
+    $needs_read = !str_starts_with($rel, ".claude") && ($isdir || preg_match("~\.(php|sql|htaccess)$|/\.htaccess$|^\.htaccess$|^stats/stats\.db$~", $rel));
     if ($needs_read && (!$reach($p) || !$can($p, "r") || ($isdir && !$can($p, "x")))) $unreadable[] = $rel;
     if ($can($p, "w")) $writable[] = $rel . ($isdir ? "/" : "");
   }
@@ -157,6 +159,30 @@ elif [ "$N_FTS" = "$N_IMG" ]; then ok "indice di ricerca allineato: $N_FTS voci 
 else err "indice di ricerca disallineato: $N_FTS voci per $N_IMG immagini"; fi
 
 # ---------------------------------------------------------------------------
+say "Statistiche d'uso"
+STATS="$(php -r '$s = @include $argv[1] . "/secret.php"; echo (is_array($s) && !empty($s["STATS_DB"])) ? $s["STATS_DB"] : $argv[1] . "/stats/stats.db";' "$APP")"
+if [ ! -f "$STATS" ]; then
+  if [ -f "$APP/stats_update.php" ]; then warn "statistiche non ancora create: $STATS (stats_update.php dal crontab)"; else ok "codice senza statistiche d'uso"; fi
+else
+  read -r UPD SINCE ROWS < <(sqlite3 "file:$STATS?immutable=1" "SELECT (SELECT v FROM meta WHERE k='updated_at'), (SELECT v FROM meta WHERE k='since'), (SELECT COUNT(*) FROM hits)" 2>/dev/null | tr '|' ' ')
+  if [ -z "${UPD:-}" ]; then err "statistiche illeggibili: $STATS"
+  else
+    AGE=$(( ($(date +%s) - UPD) / 3600 ))
+    if [ "$AGE" -le 36 ]; then ok "aggiornate $(date -d "@$UPD" '+%d/%m %H:%M') ($AGE h fa), dati dal $SINCE, $ROWS righe"
+    else warn "statistiche ferme da $AGE ore ($(date -d "@$UPD" '+%d/%m %H:%M')): il job notturno non gira?"; fi
+  fi
+  [ "$(stat -c %a "$STATS")" = 640 ] && ok "stats.db 640 $(stat -c '%U:%G' "$STATS")" || warn "stats.db con permessi $(stat -c '%a %U:%G' "$STATS") (atteso 640, gruppo del server web)"
+fi
+if [ -f "$APP/stats_update.php" ]; then
+  [ -w "$(dirname "$STATS")" ] && ok "$(id -un) puo' scrivere $(dirname "$STATS") (il job notturno)" || err "$(id -un) non puo' scrivere $(dirname "$STATS"): il job notturno fallirebbe"
+  crontab -l 2>/dev/null | grep -v '^\s*#' | grep -q 'stats_update\.php' && ok "job notturno nel crontab di $(id -un)" || warn "stats_update.php non e' nel crontab di $(id -un)"
+  LOGS="$(php -r '$s = @include $argv[1] . "/secret.php"; echo (is_array($s) && !empty($s["ACCESS_LOGS"])) ? $s["ACCESS_LOGS"] : "/var/log/apache2/access.log*";' "$APP")"
+  N_LOGS=0; N_READ=0
+  for f in $LOGS; do [ -f "$f" ] || continue; N_LOGS=$((N_LOGS+1)); [ -r "$f" ] && N_READ=$((N_READ+1)); done
+  [ "$N_LOGS" -gt 0 ] && [ "$N_READ" = "$N_LOGS" ] && ok "log di Apache leggibili da $(id -un): $N_READ" || err "log di Apache leggibili da $(id -un): $N_READ su $N_LOGS"
+fi
+
+# ---------------------------------------------------------------------------
 say "Posizione GPS negli originali"
 if [ -f "$APP/_images.php" ] && php -r 'require $argv[1] . "/_images.php"; exit(function_exists("has_location") ? 0 : 1);' "$APP" 2>/dev/null; then
   GPS="$(php -r '
@@ -180,12 +206,13 @@ CURL=(curl -sS -k --max-time 15 --resolve "$HOST:443:127.0.0.1")
 code() { "${CURL[@]}" -o /dev/null -w '%{http_code}' "https://$HOST$1" 2>/dev/null || echo 000; }
 
 for p in /gallery/ /gallery/admin/ /gallery/upload.php /gallery/api/upload.php /gallery/delete.php \
-         /gallery/regen_thumbs.php /gallery/_fpm_check.php; do
+         /gallery/regen_thumbs.php /gallery/_fpm_check.php /gallery/stats_update.php; do
   c="$(code "$p")"; [ "$c" = 401 ] && ok "$p -> 401" || err "$p -> $c (atteso 401)"
 done
 for p in /gallery/secret.php /gallery/config.php /gallery/_migrations.php /gallery/_images.php /gallery/_archive.php \
          /gallery/schema.sql /gallery/CHANGES.md /gallery/.htaccess /gallery/apply_root_tasks.sh \
-         /gallery/bench/run.sh /gallery/bench/tests.php /gallery/uploads/ /gallery/thumbs/; do
+         /gallery/bench/run.sh /gallery/bench/tests.php /gallery/uploads/ /gallery/thumbs/ \
+         /gallery/_stats.php /gallery/stats/ /gallery/stats/stats.db /gallery/stats/update.log; do
   body="$("${CURL[@]}" -w '\n%{http_code}' "https://$HOST$p" 2>/dev/null)"; c="${body##*$'\n'}"
   if [[ "$c" =~ ^(401|403|404)$ ]] && ! grep -qE '<\?php|API_TOKEN|DB_PATH' <<< "$body"; then ok "$p -> $c"
   else err "$p -> $c (atteso 401/403/404 senza contenuto)"; fi

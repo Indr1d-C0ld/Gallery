@@ -3,7 +3,7 @@
  * dipende l'applicazione (gallery.conf + .htaccess):
  *   - Basic Auth su tutto tranne la consegna immagini (i.php, /i/X, /t/X);
  *   - riscrittura /gallery/i/X -> i.php?c=X  e  /gallery/t/X -> i.php?c=X&thumb=1;
- *   - nessun accesso a bench/, file nascosti, segreti, DB e sorgenti non-PHP.
+ *   - nessun accesso a bench/, stats/, file nascosti, segreti, DB e sorgenti non-PHP.
  * NON verifica la configurazione reale di Apache: quella la controlla
  * bench/live_check.sh sul server vero.
  */
@@ -34,9 +34,9 @@ function bench_route() {
   if ($authed) $_SERVER['REMOTE_USER'] = $cfg['user'];
 
   // File e cartelle che Apache nega
-  if (preg_match('#^/gallery/(bench(/|$)|_orig_backup_|(.*/)?\.)#', $path)) return 404;
+  if (preg_match('#^/gallery/(bench(/|$)|stats(/|$)|_orig_backup_|(.*/)?\.)#', $path)) return 404;
   if (preg_match('#\.(db|db-wal|db-shm|sqlite|sql|md|log|bak|sh)$#', $path)) return 403;
-  if (preg_match('#/(secret|_theme|_images|_migrations|_archive|config)\.php$#', $path)) return 403;
+  if (preg_match('#/(secret|_theme|_images|_migrations|_archive|_stats|config)\.php$#', $path)) return 403;
   if (preg_match('#^/gallery/(uploads|thumbs)/.*\.(php|phtml|phar)$#', $path)) return 403;
 
   // Riscritture

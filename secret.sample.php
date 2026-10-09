@@ -31,4 +31,9 @@ return [
     //   sudo chmod 750 /var/lib/gallery
     //
     // 'DB_PATH'    => '/var/lib/gallery/gallery.db',
+
+    // Statistiche d'uso (stats_update.php): log di accesso di Apache da
+    // leggere e file in cui scriverle, se diversi dai valori predefiniti.
+    // 'ACCESS_LOGS' => '/var/log/apache2/access.log*',
+    // 'STATS_DB'    => '/percorso/gallery/stats/stats.db',
 ];

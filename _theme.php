@@ -268,6 +268,38 @@ textarea{font-family:var(--serif);font-size:14px;color:var(--ink);background:var
 table.ws img.cover-thumb{width:120px;height:90px;object-fit:cover}
 table.ws td:first-child input[type=checkbox],table.ws th:first-child input[type=checkbox]{width:18px;height:18px}
 
+/* ---- Uso e cruscotto (Tranche 4) ---- */
+.use{display:inline-block;font-family:var(--mono);font-size:10.5px;color:var(--muted);border:1px solid var(--edge);
+  border-radius:999px;padding:1px 7px;margin-top:4px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:top}
+.use.on{color:var(--accent-ink);border-color:var(--accent);background:var(--frame)}
+.use.off{border-style:dashed}
+.use.warn{color:var(--grease);border-color:var(--grease);white-space:normal}
+.warnbox{border:1.5px solid var(--grease);background:var(--frame);border-radius:8px;padding:10px 12px;margin:12px 0;
+  font-family:var(--mono);font-size:12.5px}
+.warnbox p{margin:0 0 6px}
+.warnbox ul{margin:6px 0 10px;padding-left:18px;word-break:break-word}
+.warnbox form{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.dash{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:18px;margin-top:12px}
+.card{background:var(--frame);border:1px solid var(--edge);border-radius:8px;padding:12px 14px;box-shadow:var(--shadow);min-width:0}
+.card.wide{grid-column:1/-1}
+.card h2{font-family:var(--mono);font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:6px}
+.kpi b{display:block;font-family:var(--serif);font-size:28px;font-weight:normal;line-height:1.1;color:var(--ink)}
+.kpi span{font-family:var(--mono);font-size:11px;color:var(--muted)}
+table.dt{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
+table.dt td,table.dt th{padding:5px 6px;border-bottom:1px dashed var(--edge);vertical-align:middle;text-align:left}
+table.dt th{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:normal}
+table.dt .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+table.dt .lbl{word-break:break-word}
+table.dt img{width:44px;height:44px;object-fit:cover;border:1px solid var(--frame-line);background:var(--mat);padding:2px;display:block}
+.hbar{display:block;height:8px;min-width:48px;background:var(--paper-2);border-radius:2px;overflow:hidden}
+.hbar i{display:block;height:100%;background:var(--accent)}
+.hbar.mut i{background:var(--muted)}
+.cols{display:flex;align-items:flex-end;gap:2px;height:110px;border-bottom:1px solid var(--edge)}
+.cols span{flex:1;min-width:2px;background:var(--accent);border-radius:2px 2px 0 0}
+.cols span.zero{background:var(--edge);height:2px!important}
+.cols-x{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:4px}
+
 /* =========================================================================
  * Mobile & tablet (telefono, tablet, o comunque puntatore touch)
  * Regole SOLO additive/di ingrandimento: non tocca nulla fuori da qui,

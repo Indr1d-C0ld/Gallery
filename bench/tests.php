@@ -5,8 +5,9 @@
  * Lavora SOLO sui percorsi del banco descritti in bench.json; si rifiuta di
  * partire se uno di essi esce dal banco o coincide con il DB reale.
  * Gruppi: migrazioni · integrita' dell'archivio copiato · upload e miniature
- * · difese (bombe, CSRF, auth, parametri ostili) · copia/elimina · permessi
- * · migrazioni su DB nuovi/vecchi/concorrenti · log degli errori.
+ * · difese (bombe, CSRF, auth, parametri ostili) · copia/elimina · statistiche
+ * d'uso dai log · permessi · migrazioni su DB nuovi/vecchi/concorrenti · log
+ * degli errori.
  * ========================================================================= */
 if (PHP_SAPI !== 'cli') { http_response_code(404); exit; }
 
@@ -22,7 +23,22 @@ $TMP = $C['bench'] . '/img';
 require $WWW . '/_migrations.php';          // solo definizioni di funzioni
 $EXPECT = range(1, schema_latest());        // versioni attese dopo la migrazione
 require $WWW . '/_images.php';              // per le prove unitarie: definizioni, nessun accesso al DB
+require $WWW . '/_stats.php';               // idem: lettura dei log e classificazione
 @mkdir($TMP, 0700, true);
+// stesso fuso dell'app (config.php): i giorni dei log finti devono coincidere con i suoi
+if (get_cfg_var('date.timezone') === false && ($__tz = @readlink('/etc/localtime')) && preg_match('~zoneinfo/(.+)$~', $__tz, $__m)) {
+  date_default_timezone_set($__m[1]);
+}
+
+/* ---------- log di Apache finti (statistiche d'uso) ---------- */
+const UA_FF = 'Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0';
+const UA_CH = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
+/* Una riga nel formato "combined", come la scrive Apache; $ago = giorni fa. */
+function alog(int $ago, string $hms, string $target, int $status = 200, string $ref = '-', string $ua = UA_FF, string $user = '-', string $method = 'GET'): string {
+  $t = (new DateTimeImmutable('today'))->modify("-$ago days");
+  return sprintf('203.0.113.%d - %s [%s:%s %s] "%s %s HTTP/1.1" %d 1234 "%s" "%s"', random_int(1, 250), $user,
+    $t->format('d/M/Y'), $hms, $t->format('O'), $method, $target, $status, $ref, $ua) . "\n";
+}
 
 /* ---------- strumenti ---------- */
 $RESULTS = ['ok' => 0, 'fail' => 0, 'failed' => []];
@@ -809,6 +825,269 @@ group('Modifica, cestino, eliminazione definitiva', function () use (&$live_shor
   admin_post(['act' => 'purge', 'short' => $orig], 'cestino');
   check('  dal cestino, eliminata per sempre: riga, file e miniatura spariscono',
     row($orig) === null && !is_file("$WWW/uploads/$fn") && !is_file("$WWW/thumbs/$fn"));
+});
+
+/* ======================================================================= */
+group('Statistiche d\'uso: lettura dei log (prove unitarie)', function () {
+  $own = ['example.test'];
+  $n = fn(string $raw) => stats_norm_ref($raw)['ref'] ?? null;
+  check('provenienza: sid, utm e frammento tolti, il resto resta',
+    $n('https://forum.example.org/viewtopic.php?f=2&t=12&sid=0123abcd&utm_source=x#p5') === 'forum.example.org/viewtopic.php?f=2&t=12');
+  check('  token, chiavi, sessioni ed email tolti',
+    $n('https://a.example/p?id=7&token=abc&api_key=k&email=x%40y.z&Session_Id=1&k=del') === 'a.example/p?id=7', (string) $n('https://a.example/p?id=7&token=abc&api_key=k&email=x%40y.z&Session_Id=1&k=del'));
+  check('  "https://a, https://b": vale la prima', $n('https://google.com, https:/') === 'google.com/');
+  check('  schema non web conservato, porta conservata, host in minuscolo',
+    $n('android-app://com.google.android.gm/') === 'android-app://com.google.android.gm/' && $n('http://Host.Example:8080/x') === 'host.example:8080/x');
+  check('  assente o illeggibile: nessuna provenienza', $n('-') === null && $n('') === null && $n('nonunurl') === null);
+  check('bot: Googlebot, curl, user agent vuoto sì; CUBOT (telefono) e Firefox no',
+    stats_is_bot('Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)') && stats_is_bot('curl/8.14.1') && stats_is_bot('-')
+    && !stats_is_bot('Mozilla/5.0 (Linux; Android 10; CUBOT KINGKONG 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Mobile Safari/537.36')
+    && !stats_is_bot(UA_FF) && !stats_is_bot(UA_CH));
+  check('servizi: TelegramBot, WhatsApp, proxy di Gmail; un browser no',
+    stats_service('TelegramBot (like TwitterBot)') === 'Telegram' && stats_service('WhatsApp/2.23.20.0 A') === 'WhatsApp'
+    && stats_service('Mozilla/5.0 (Windows NT 5.1; rv:11.0) Gecko Firefox/11.0 (via ggpht.com GoogleImageProxy)') === 'Gmail'
+    && stats_service(UA_FF) === null);
+  check('codice: /i/ e /t/ anche con ?w= e ?v=, i.php?c=; il resto no',
+    stats_request_short('/gallery/i/AbC-_9') === 'AbC-_9' && stats_request_short('/gallery/t/AbC?v=12') === 'AbC'
+    && stats_request_short('/gallery/i/AbC?w=640&v=3') === 'AbC' && stats_request_short('/gallery/i.php?thumb=1&c=Xy1') === 'Xy1'
+    && stats_request_short('/gallery/i.php?c[]=x') === null && stats_request_short('/gallery/index.php') === null
+    && stats_request_short('/gallery/i/a/b') === null && stats_request_short('/gallery/upload.php?c=x') === null);
+  $L = fn(...$a) => stats_parse_line(alog(...$a), $own);
+  check('riga: HEAD, 500 e pagine che non sono immagini ignorate',
+    $L(1, '10:00:00', '/gallery/i/X', 200, '-', UA_FF, '-', 'HEAD') === null && $L(1, '10:00:00', '/gallery/i/X', 500) === null
+    && $L(1, '10:00:00', '/gallery/admin/', 200) === null && stats_parse_line("riga illeggibile /gallery/i/X\n", $own) === null);
+  $p = $L(1, '10:00:00', '/gallery/i/X', 404, 'https://example.test/forum/viewtopic.php?t=3');
+  check('riga: 404 da una pagina dello stesso host fuori da /gallery: pagina, non trovata, giorno giusto',
+    $p === [stats_day_ago(2), 'X', 'pagina', 'example.test/forum/viewtopic.php?t=3', 0], json_encode($p));
+  check('riga: dalle pagine della galleria, o da te senza provenienza: interno',
+    ($L(1, '10:00:00', '/gallery/i/X', 200, 'https://example.test/gallery/admin/?q=x')[2] ?? '') === 'interno'
+    && ($L(1, '10:00:00', '/gallery/t/X', 304, '-', UA_FF, 'admin')[2] ?? '') === 'interno');
+  $p = $L(1, '10:00:00', '/gallery/i/X', 200, 'https://forum.example.org/viewtopic.php?t=9', UA_FF, 'admin');
+  check('riga: tu che leggi un post del forum: pagina (è lì che l\'immagine è incollata)', ($p[2] ?? '') === 'pagina');
+  check('riga: virgolette con escape nello user agent', ($L(1, '10:00:00', '/gallery/i/X', 200, '-', 'Mozilla/5.0 \"strano\" Firefox/1')[2] ?? '') === 'diretto');
+});
+
+/* ======================================================================= */
+group('Statistiche d\'uso: job notturno, cruscotto, avviso prima di eliminare', function () use (&$first, $C, $WWW) {
+  $sd = $C['stats_db']; $ap = $C['apache'];
+  $host = parse_url($C['base'], PHP_URL_HOST) . ':' . parse_url($C['base'], PHP_URL_PORT);
+  $run = function (string ...$args) use ($WWW): array {
+    exec('umask 002; php ' . escapeshellarg("$WWW/stats_update.php") . ' ' . implode(' ', array_map('escapeshellarg', $args)) . ' 2>&1', $out, $rc);
+    return [$rc, implode("\n", $out)];
+  };
+  $sq = function (string $sql, array $args = []) use ($sd) {
+    $p = new PDO('sqlite:' . $sd, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::SQLITE_ATTR_OPEN_FLAGS => PDO::SQLITE_OPEN_READONLY]);
+    $st = $p->prepare($sql); $st->execute($args); return $st->fetchColumn();
+  };
+  $rw = fn() => new PDO('sqlite:' . $sd, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+  $digest = fn() => sha1((string) $sq("SELECT group_concat(day||'|'||short||'|'||src||'|'||ref||'|'||ok||'|'||n, ';') FROM (SELECT * FROM hits ORDER BY day, short, src, ref, ok)"));
+  $d = fn(int $ago) => stats_day_ago($ago + 1);
+  $adm = fn(string $qs = '') => req('GET', '/gallery/admin/index.php' . ($qs !== '' ? "?$qs" : ''), ['auth' => true, 'session' => true])['body'];
+
+  // --- statistiche reali copiate dal live
+  if ($C['stats_copied'] && is_file($sd)) {
+    $r = req('GET', '/gallery/admin/?v=cruscotto', ['auth' => true]);
+    check('statistiche reali copiate: il cruscotto risponde 200 e le mostra', $r['code'] === 200 && str_contains($r['body'], 'Più viste'), "HTTP {$r['code']}");
+  } else {
+    info('nessuna statistica reale da copiare: si prova con i log finti');
+  }
+
+  // --- senza statistiche: tutto funziona, nessun dato d'uso
+  @rename($sd, "$sd.reale");
+  $ws = $adm(); $dash = req('GET', '/gallery/admin/?v=cruscotto', ['auth' => true]);
+  check('senza file delle statistiche: foglio di lavoro e cruscotto rispondono, con l\'avviso',
+    str_contains($ws, 'Statistiche d\'uso non ancora disponibili') && !str_contains($ws, 'class="use') && $dash['code'] === 200
+    && str_contains($dash['body'], 'Spazio per album') && !str_contains($dash['body'], 'Più viste'));
+
+  // --- immagini e log finti
+  $ids = [];
+  foreach (['usoA', 'usoB', 'usoC', 'usoD', 'usoE'] as $k => $name) {
+    [, $j] = upload_json(make_img($name, 271 + $k, 181, 'png'), 'image/png', ['folder' => 'Uso', 'title' => "uso $name"]);
+    $ids[] = $j['id'] ?? '';
+  }
+  [$A, $B, $Cc, $D, $E] = $ids;
+  check('preparazione: 5 immagini', count(array_filter($ids)) === 5);
+  db_bench()->prepare("INSERT INTO short_aliases(short, image_id, created_at) SELECT ?, id, ? FROM images WHERE short=?")->execute(['aliasUSO01', time(), $A]);
+
+  $F = 'https://forum.example.org/viewtopic.php?f=2&t=12&sid=0123456789abcdef';
+  $G = "http://$host/gallery/admin/";
+  $l1 = '';                                                    // access.log.1: ieri, e la sera dell'altro ieri
+  for ($i = 0; $i < 5; $i++) $l1 .= alog(1, "10:0$i:00", "/gallery/i/$A", 200, $F);
+  for ($i = 0; $i < 3; $i++) $l1 .= alog(1, "11:0$i:00", "/gallery/t/$A?v=123", 200, '-', 'TelegramBot (like TwitterBot)');
+  for ($i = 0; $i < 2; $i++) $l1 .= alog(1, "12:0$i:00", "/gallery/i/$A?w=640", 200, '-', UA_CH);
+  for ($i = 0; $i < 4; $i++) $l1 .= alog(1, "13:0$i:00", "/gallery/i.php?c=$A&thumb=1&v=1", 200, $G);
+  for ($i = 0; $i < 2; $i++) $l1 .= alog(1, "14:0$i:00", "/gallery/i/$A", 304, '-', UA_FF, 'bench');
+  $l1 .= alog(1, '14:30:00', "/gallery/i/$A", 200, 'https://forum.example.org/viewtopic.php?t=99', UA_FF, 'bench');
+  for ($i = 0; $i < 3; $i++) $l1 .= alog(1, "15:0$i:00", "/gallery/i/$A", 200, '-', 'curl/8.14.1');
+  $l1 .= alog(1, '15:30:00', "/gallery/i/$A", 200, '-', 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)');
+  $l1 .= alog(1, '16:00:00', "/gallery/i/$A", 200, $F, UA_FF, '-', 'HEAD');
+  $l1 .= alog(1, '16:01:00', "/gallery/i/$A", 500, $F);
+  for ($i = 0; $i < 2; $i++) $l1 .= alog(1, "16:1$i:00", '/gallery/i/aliasUSO01', 200, 'https://blog.example.net/post/1#commenti');
+  $l1 .= alog(1, '17:00:00', "/gallery/i/$A", 200, '-', 'Mozilla/5.0 \"strano\" Firefox/1');
+  $l1 .= alog(1, '17:01:00', "/gallery/i/$A", 200, 'https://google.com, https:/');
+  $l1 .= alog(1, '17:02:00', "/gallery/i/$A", 200, '-', 'Mozilla/5.0 (Linux; Android 10; CUBOT KINGKONG 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Mobile Safari/537.36');
+  $l1 .= alog(1, '17:03:00', "/gallery/i/$A", 200, 'https://evil.example/<script>alert(1)</script>');
+  for ($i = 0; $i < 3; $i++) $l1 .= alog(1, "18:0$i:00", "/gallery/i/$B", 404, 'https://forum.example.org/viewtopic.php?t=50');
+  for ($i = 0; $i < 3; $i++) $l1 .= alog(1, "18:1$i:00", "/gallery/i/$Cc", 200, $G);
+  for ($i = 0; $i < 2; $i++) $l1 .= alog(1, "18:2$i:00", "/gallery/i/$D", 404, '-', UA_CH);
+  $l1 .= alog(1, '19:00:00', '/forum/index.php', 200) . alog(1, '19:00:01', '/gallery/', 200, '-', UA_FF, 'bench') . "riga illeggibile /gallery/i/$A\n";
+  for ($i = 0; $i < 3; $i++) $l1 .= alog(2, "20:0$i:00", "/gallery/i/$A", 200, 'https://forum.example.org/viewtopic.php?t=7');
+  $l2 = '';                                                    // access.log.2.gz: mattina dell'altro ieri e giorni prima
+  for ($i = 0; $i < 2; $i++) $l2 .= alog(2, "08:0$i:00", "/gallery/i/$A", 200, 'https://forum.example.org/viewtopic.php?t=7');
+  for ($i = 0; $i < 2; $i++) $l2 .= alog(3, "09:0$i:00", "/gallery/i/$B", 200, 'https://forum.example.org/viewtopic.php?t=50');
+  for ($i = 0; $i < 7; $i++) $l2 .= alog(40, "09:0$i:00", "/gallery/i/$A", 200, 'https://old.example.com/');
+  file_put_contents("$ap/access.log.1", $l1);
+  file_put_contents("$ap/access.log.2.gz", gzencode($l2));
+  file_put_contents("$ap/access.log", alog(0, '00:30:00', "/gallery/i/$A", 200, $F));
+
+  // --- il job
+  [$rc, $out] = $run('--quiet');
+  check('stats_update.php: esito 0, una riga di riepilogo', $rc === 0 && str_contains($out, ' ok: 3 log'), $out);
+  $lk = dirname($sd) . '/.lock';
+  check('  stats.db e .lock con permessi 640, anche con umask 002 (il server web legge, non scrive)',
+    is_file($sd) && (fileperms($sd) & 0777) === 0640 && (fileperms($lk) & 0777) === 0640, sprintf('%o %o', @fileperms($sd) & 0777, @fileperms($lk) & 0777));
+  check('  nessun file temporaneo rimasto', !glob(dirname($sd) . '/.stats.db.tmp-*'));
+  $hit = fn(int $ago, string $short, string $src, string $ref = '', int $ok = 1) => (int) $sq("SELECT n FROM hits WHERE day=? AND short=? AND src=? AND ref=? AND ok=?", [$d($ago), $short, $src, $ref, $ok]);
+  check('conteggi: pagina del forum senza sid (5), Telegram (3), senza provenienza (4)',
+    $hit(1, $A, 'pagina', 'forum.example.org/viewtopic.php?f=2&t=12') === 5 && $hit(1, $A, 'servizio', 'Telegram') === 3 && $hit(1, $A, 'diretto') === 4,
+    $hit(1, $A, 'pagina', 'forum.example.org/viewtopic.php?f=2&t=12') . '/' . $hit(1, $A, 'servizio', 'Telegram') . '/' . $hit(1, $A, 'diretto'));
+  check('  interno: dalle pagine della galleria (4) e da te senza provenienza (2)', $hit(1, $A, 'interno') === 6);
+  check('  tu dal forum: pagina; bot e curl a parte; HEAD e 500 non contano',
+    $hit(1, $A, 'pagina', 'forum.example.org/viewtopic.php?t=99') === 1 && $hit(1, $A, 'bot') === 4 && (int) $sq("SELECT lines FROM days WHERE day=?", [$d(1)]) === 35,
+    'righe di ieri: ' . $sq("SELECT lines FROM days WHERE day=?", [$d(1)]));
+  check('  nessun sid salvato, frammento tolto, alias contato a parte',
+    !$sq("SELECT 1 FROM hits WHERE ref LIKE '%sid=%' OR ref LIKE '%#%'") && $hit(1, 'aliasUSO01', 'pagina', 'blog.example.net/post/1') === 2);
+  check('  un giorno diviso fra due log (uno compresso) contato per intero', $hit(2, $A, 'pagina', 'forum.example.org/viewtopic.php?t=7') === 5);
+  check('  404 a un\'immagine: contate come "non trovata"', $hit(1, $B, 'pagina', 'forum.example.org/viewtopic.php?t=50', 0) === 3);
+  check('  dati dal giorno della prima riga del log più vecchio', $sq("SELECT v FROM meta WHERE k='since'") === $d(40));
+
+  $dg = $digest();
+  [$rc] = $run('--quiet');
+  check('rilanciato: stesso risultato (idempotente)', $rc === 0 && $digest() === $dg);
+
+  copy("$ap/access.log.1", "$ap/access.log.9");                  // lo stesso log con un altro nome
+  [$rc, $out] = $run();
+  check('stesso log sotto due nomi (rotazione durante la lettura): contato una volta', $rc === 0 && str_contains($out, 'saltato') && $digest() === $dg, $out);
+  unlink("$ap/access.log.9");
+
+  file_put_contents("$ap/access.log.5.gz", gzencode(alog(5, '10:00:00', "/gallery/i/$A", 200, $F)));
+  chmod("$ap/access.log.5.gz", 0);
+  [$rc, $out] = $run();
+  check('un log non leggibile: avviso, gli altri vengono letti', $rc === 0 && str_contains($out, 'non leggibile') && $digest() === $dg, $out);
+  unlink("$ap/access.log.5.gz");
+
+  $mt = filemtime($sd);
+  [$rc, $out] = $run('--logs', "$ap/nessuno*");
+  clearstatcache();
+  check('nessun log: esito 1, statistiche intatte', $rc === 1 && str_contains($out, 'nessun log trovato') && filemtime($sd) === $mt && $digest() === $dg, $out);
+  file_put_contents("$ap/altro.log", alog(1, '10:00:00', '/forum/index.php', 200) . alog(1, '10:00:01', '/gallery/admin/', 200, '-', UA_FF, 'bench'));
+  [$rc, $out] = $run('--logs', "$ap/altro.log");
+  check('log senza immagini riconosciute: avviso sul formato, statistiche intatte', $rc === 0 && str_contains($out, 'formato del log') && $digest() === $dg, $out);
+  unlink("$ap/altro.log");
+
+  // --- fusione: un giorno completo non viene sostituito da uno parziale
+  rename("$ap/access.log.2.gz", "$ap/vecchio.gz");               // il log piu' vecchio esce dalla rotazione
+  [$rc, $out] = $run();
+  check('log più vecchio uscito: il giorno diviso resta intero, quelli precedenti restano',
+    $rc === 0 && $hit(2, $A, 'pagina', 'forum.example.org/viewtopic.php?t=7') === 5 && $hit(40, $A, 'pagina', 'old.example.com/') === 7
+    && str_contains($out, 'tenuti dallo storico'), $out);
+  file_put_contents("$ap/access.log", alog(0, '00:40:00', "/gallery/i/$A", 200, $F) . alog(0, '00:41:00', "/gallery/i/$A", 200, $F), FILE_APPEND);
+  $run('--quiet');
+  check('il giorno in corso si completa al giro dopo', $hit(0, $A, 'pagina', 'forum.example.org/viewtopic.php?f=2&t=12') === 3);
+  $w = $rw(); $w->prepare("UPDATE days SET lines=1 WHERE day=?")->execute([$d(1)]); $w->prepare("UPDATE hits SET n=999 WHERE day=? AND src='servizio'")->execute([$d(1)]); $w = null;
+  $run('--quiet');
+  check('un giorno con meno righe di quelle nei log viene ricalcolato', $hit(1, $A, 'servizio', 'Telegram') === 3);
+  rename("$ap/vecchio.gz", "$ap/access.log.2.gz");
+
+  // --- file rovinato: il pannello va avanti, il job lo mette da parte e riparte
+  copy($sd, "$sd.buono");
+  file_put_contents($sd, str_repeat("non sono un database\n", 200));
+  $ws = $adm();
+  check('statistiche rovinate: il pannello risponde e lo dice', str_contains($ws, 'non si legge') && !str_contains($ws, 'class="use'));
+  [$rc, $out] = $run('--quiet');
+  check('  il job le mette da parte e le ricostruisce dai log', $rc === 0 && str_contains($out, 'illeggibili') && glob("$sd.rovinato-*")
+    && $hit(1, $A, 'servizio', 'Telegram') === 3, $out);
+  array_map('unlink', glob("$sd.rovinato-*"));
+  rename("$sd.buono", $sd);
+  @chmod($sd, 0640);
+
+  // --- pannello: uso nel foglio di lavoro e filtro (A: 3 oggi + 17 ieri + 5 l'altro ieri = 25)
+  $ws = $adm('uso=in');
+  check('foglio di lavoro: «25 viste · 30 g» sull\'immagine usata, con le provenienze',
+    str_contains($ws, '>25 viste · 30 g<') && str_contains($ws, 'forum.example.org/viewtopic.php?f=2&amp;t=12 (8)'));
+  $in = page_ids('/gallery/admin/index.php?uso=in'); sort($in); $exp = [$A, $B, $D]; sort($exp);
+  check('  filtro «in uso»: le tre richieste da fuori (alias compreso), non quella vista solo dalla galleria', $in === $exp, json_encode($in));
+  $mai = page_ids('/gallery/admin/index.php?uso=mai');
+  check('  filtro «mai viste»: c\'è quella vista solo dalla galleria, non quella usata', in_array($Cc, $mai, true) && !in_array($A, $mai, true));
+  check('  l\'immagine vista solo dalla galleria è segnata «mai vista»',
+    (bool) preg_match('~<code>' . preg_quote($Cc, '~') . '</code><br>\s*<span style="color:var\(--muted\)">[^<]*</span>\s*<br><span class="use off"~', $adm()));
+  check('  il pulsante Cestina chiede conferma con l\'uso', str_contains($ws, 'data-confirm="«' . $A . '» è ancora in uso: 25 viste') && str_contains($ws, 'data-in-use="25 viste'));
+
+  // --- avviso prima di eliminare, anche senza JavaScript
+  admin_post(['act' => 'delete', 'short' => $A]);
+  $ws = $adm();
+  check('Cestina su un\'immagine in uso senza conferma: non succede nulla, il pannello mostra l\'avviso',
+    row($A)['deleted_at'] === null && str_contains($ws, 'class="warnbox"') && str_contains($ws, 'Sposta comunque nel cestino') && str_contains($ws, '25 viste'));
+  check('  l\'avviso si mostra una volta sola', !str_contains($adm(), 'Sposta comunque nel cestino'));
+  admin_post(['act' => 'delete', 'short' => $A, 'in_use_ok' => '1']);
+  check('  con la conferma: nel cestino', row($A)['deleted_at'] !== null);
+  admin_post(['act' => 'restore', 'short' => $A], 'cestino');
+  admin_post(['act' => 'delete', 'short' => $Cc]);
+  check('  un\'immagine non in uso va nel cestino subito', row($Cc)['deleted_at'] !== null);
+  admin_post(['act' => 'restore', 'short' => $Cc], 'cestino');
+  admin_post(['act' => 'bulk', 'op' => 'trash'] + ids_fields([$A, $Cc]));
+  check('multiple con una in uso, senza conferma: nessuna spostata', row($A)['deleted_at'] === null && row($Cc)['deleted_at'] === null && str_contains($adm(), 'Sposta comunque nel cestino'));
+  admin_post(['act' => 'bulk', 'op' => 'trash', 'in_use_ok' => '1'] + ids_fields([$A, $Cc]));
+  check('  con la conferma: tutte e due', row($A)['deleted_at'] !== null && row($Cc)['deleted_at'] !== null);
+  admin_post(['act' => 'restore'] + ids_fields([$A, $Cc]), 'cestino');
+
+  // --- cestino: immagini ancora richieste
+  admin_post(['act' => 'delete', 'short' => $B, 'in_use_ok' => '1']);
+  $tr = $adm('v=cestino');
+  check('cestino: l\'immagine ancora richiesta è segnata, la conferma lo dice', str_contains($tr, 'ancora richiesta: 5 richieste') && str_contains($tr, 'Chi la cerca troverà un&#039;immagine mancante'));
+  admin_post(['act' => 'purge', 'short' => $B], 'cestino');
+  check('  elimina per sempre senza conferma: resta, con l\'avviso', row($B) !== null && str_contains($adm('v=cestino'), 'Elimina comunque per sempre'));
+  admin_post(['act' => 'purge', 'short' => $B, 'in_use_ok' => '1'], 'cestino');
+  check('  con la conferma: eliminata', row($B) === null);
+  admin_post(['act' => 'delete', 'short' => $D, 'in_use_ok' => '1']);
+  admin_post(['act' => 'delete', 'short' => $E]);
+  db_bench()->prepare("UPDATE images SET deleted_at=? WHERE short IN (?,?)")->execute([time() - 31 * 86400, $D, $E]);
+  $tr = $adm('v=cestino');
+  check('dopo 30 giorni: eliminata quella mai richiesta, tenuta quella ancora richiesta', row($E) === null && row($D) !== null && str_contains($tr, 'tenuta: ancora richiesta'));
+  admin_post(['act' => 'purge_all'], 'cestino');
+  check('  svuota il cestino senza conferma: resta, con l\'avviso', row($D) !== null && str_contains($adm('v=cestino'), 'Svuota comunque il cestino'));
+
+  // --- cruscotto
+  $r = req('GET', '/gallery/admin/index.php?v=cruscotto', ['auth' => true]);
+  $b = $r['body'];
+  check('cruscotto: 200, le sezioni ci sono', $r['code'] === 200 && str_contains($b, 'Più viste') && str_contains($b, 'Viste al giorno')
+    && str_contains($b, 'Da dove arrivano') && str_contains($b, 'Spazio per album') && str_contains($b, 'Caricamenti nel tempo'));
+  check('  la più vista con le sue 25 viste', (bool) preg_match('~<code>' . preg_quote($A, '~') . '</code>.*?<td class="num">25</td>~s', $b));
+  check('  provenienze: il forum con collegamento (senza referrer), Telegram',
+    str_contains($b, 'href="https://forum.example.org/viewtopic.php?f=2&amp;t=12" target="_blank" rel="noopener noreferrer"') && str_contains($b, '>Telegram<'));
+  check('  richieste a immagini che non ci sono più: eliminata e nel cestino', str_contains($b, 'Richieste a immagini che non ci sono più')
+    && (bool) preg_match('~<code>' . preg_quote($B, '~') . '</code></td>\s*<td>eliminata~', $b) && str_contains($b, '>nel cestino</a>'));
+  check('  una provenienza con HTML esce come testo', !str_contains($b, '<script>alert(1)') && str_contains($b, '&lt;script&gt;alert(1)'));
+  $w = $rw(); $w->exec("UPDATE meta SET v='" . (time() - 3 * 86400) . "' WHERE k='updated_at'"); $w = null;
+  check('statistiche vecchie di 3 giorni: il pannello avvisa che il job non gira', str_contains(req('GET', '/gallery/admin/?v=cruscotto', ['auth' => true])['body'], 'Statistiche d\'uso ferme al'));
+  $run('--quiet');
+
+  // --- senza statistiche non si blocca nulla
+  rename($sd, "$sd.via");
+  admin_post(['act' => 'delete', 'short' => $A]);
+  check('senza statistiche Cestina non chiede nulla (nessun dato, nessun blocco)', row($A)['deleted_at'] !== null);
+  admin_post(['act' => 'restore', 'short' => $A], 'cestino');
+  rename("$sd.via", $sd);
+
+  // --- dal web: niente
+  check('stats/ e stats.db non si servono, _stats.php nemmeno', in_array(req('GET', '/gallery/stats/stats.db')['code'], [401, 404], true)
+    && req('GET', '/gallery/stats/stats.db', ['auth' => true])['code'] === 404 && req('GET', '/gallery/stats/', ['auth' => true])['code'] === 404
+    && req('GET', '/gallery/_stats.php', ['auth' => true])['code'] === 403);
+  $r = req('GET', '/gallery/stats_update.php', ['auth' => true]);
+  check('stats_update.php dal web: 403, solo da riga di comando', $r['code'] === 403 && str_contains($r['body'], 'solo CLI'));
+
+  // --- pulizia: torna la copia delle statistiche reali (per --serve e per i gruppi seguenti)
+  if (is_file("$sd.reale")) rename("$sd.reale", $sd); else @unlink($sd);
 });
 
 /* ======================================================================= */

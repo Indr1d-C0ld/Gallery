@@ -23,6 +23,15 @@ if (is_file(__DIR__ . '/secret.php')) {
   $__secret = (array) (include __DIR__ . '/secret.php');
 }
 
+/* --- Ora locale ------------------------------------------------------------
+ * php.ini non imposta date.timezone, quindi PHP usa UTC. I log di Apache
+ * pero' contano i giorni in ora locale, e le statistiche d'uso devono tagliare
+ * i giorni nello stesso punto: si prende il fuso del sistema. Di riflesso
+ * anche le date mostrate nel pannello sono in ora locale. */
+if (get_cfg_var('date.timezone') === false && ($__tz = @readlink('/etc/localtime')) && preg_match('~zoneinfo/(.+)$~', $__tz, $__m)) {
+  @date_default_timezone_set($__m[1]);
+}
+
 /* --- Host / Base URL ------------------------------------------------------- */
 $ALLOWED_HOSTS = $__secret['ALLOWED_HOSTS'] ?? ['tuo-dominio.tld'];
 
@@ -45,6 +54,11 @@ $BASE_URL = $scheme . '://' . $host . '/gallery';
 $DB_PATH = $__secret['DB_PATH'] ?? (getenv('GALLERY_DB') ?: __DIR__ . '/gallery.db');
 $UPLOADS = __DIR__ . '/uploads';
 $THUMBS  = __DIR__ . '/thumbs';
+
+/* Statistiche d'uso (vedi _stats.php): stats_update.php legge ogni notte i
+ * log di Apache e scrive $STATS_DB, che il pannello apre in sola lettura. */
+$STATS_DB    = $__secret['STATS_DB'] ?? (__DIR__ . '/stats/stats.db');
+$ACCESS_LOGS = $__secret['ACCESS_LOGS'] ?? '/var/log/apache2/access.log*';
 
 /* --- Upload ------------------------------------------------------------- */
 $USE_THUMBS  = true;
